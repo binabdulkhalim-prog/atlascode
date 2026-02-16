@@ -1,6 +1,7 @@
-import { defaultActionGuard } from '@atlassianlabs/guipi-core-controller';
 import { MinimalIssue } from '@atlassianlabs/jira-pi-common-models';
 import Axios from 'axios';
+import { defaultActionGuard } from 'src/ipc/messaging';
+import { Logger } from 'src/logger';
 import { Uri } from 'vscode';
 
 import { DetailedSiteInfo } from '../../../../atlclients/authInfo';
@@ -27,7 +28,6 @@ import {
     PullRequestDetailsMessageType,
     PullRequestDetailsResponse,
 } from '../../../ipc/toUI/pullRequestDetails';
-import { Logger } from '../../../logger';
 import { formatError } from '../../formatError';
 import { CommonActionMessageHandler } from '../common/commonActionMessageHandler';
 import { MessagePoster, WebviewController } from '../webviewController';
@@ -552,6 +552,10 @@ export class PullRequestDetailsWebviewController implements WebviewController<Pu
                         reason: formatError(e, 'Error opening build status'),
                     });
                 }
+                break;
+
+            case PullRequestDetailsActionType.HandleEditorFocus:
+                this.api.handleEditorFocus(msg.isFocused);
                 break;
 
             case CommonActionType.SendAnalytics:

@@ -18,6 +18,7 @@ import { Container } from './container';
 
 describe('SiteManager', () => {
     let siteManager: SiteManager;
+    let siteManager_resolvePrimarySite: () => void;
     let mockGlobalStore: Memento;
     let mockAuthChangeEmitter: EventEmitter<AuthInfoEvent>;
     let mockCredentialManager: CredentialManager;
@@ -63,6 +64,7 @@ describe('SiteManager', () => {
             getAuthInfo: jest.fn(),
             removeAuthInfo: jest.fn(),
             generateCredentialId: jest.fn(),
+            getApiTokenIfExists: jest.fn().mockResolvedValue(undefined),
         } as unknown as CredentialManager;
 
         CredentialManager.generateCredentialId = jest.fn((productKey, userId) => `${productKey}-${userId}`);
@@ -75,8 +77,10 @@ describe('SiteManager', () => {
             },
             config: {
                 jira: {
-                    lastCreateSiteAndProject: {
+                    lastCreatePreSelectedValues: {
                         siteId: 'site1',
+                        projectKey: '',
+                        issueTypeId: '',
                     },
                 },
             },
@@ -89,6 +93,7 @@ describe('SiteManager', () => {
 
         // Create a SiteManager instance
         siteManager = new SiteManager(mockGlobalStore);
+        siteManager_resolvePrimarySite = () => siteManager['resolvePrimarySite']();
     });
 
     afterEach(() => {
@@ -103,46 +108,46 @@ describe('SiteManager', () => {
     });
 
     describe('addSites', () => {
-        it('should add sites to empty state', () => {
+        it('should add sites to empty state', async () => {
             const newSites = [createDetailedSiteInfo(ProductJira)];
 
-            siteManager.addSites(newSites);
+            await siteManager.addSites(newSites);
 
             expect(mockGlobalStore.update).toHaveBeenCalledWith(`${ProductJira.key}Sites`, newSites);
             expect(siteManager.getSitesAvailable(ProductJira)).toEqual(newSites);
         });
 
-        it('should add sites to existing site collection', () => {
+        it('should add sites to existing site collection', async () => {
             const existingSite = createDetailedSiteInfo(ProductJira, 'site1');
             const newSite = createDetailedSiteInfo(ProductJira, 'site2');
 
             storedSites.set(`${ProductJira.key}Sites`, [existingSite]);
 
-            siteManager.addSites([newSite]);
+            await siteManager.addSites([newSite]);
 
             expect(mockGlobalStore.update).toHaveBeenCalledWith(`${ProductJira.key}Sites`, [existingSite, newSite]);
             expect(siteManager.getSitesAvailable(ProductJira)).toEqual([existingSite, newSite]);
         });
 
-        it('should not add duplicate sites', () => {
+        it('should not add duplicate sites', async () => {
             const site = createDetailedSiteInfo(ProductJira);
 
             storedSites.set(`${ProductJira.key}Sites`, [site]);
 
-            siteManager.addSites([site]);
+            await siteManager.addSites([site]);
 
             expect(mockGlobalStore.update).toHaveBeenCalledWith(`${ProductJira.key}Sites`, [site]);
             expect(siteManager.getSitesAvailable(ProductJira)).toEqual([site]);
         });
 
-        it('should ensure cloud sites use the per account credential ID', () => {
+        it('should ensure cloud sites use the per account credential ID', async () => {
             const cloudSite = createDetailedSiteInfo(ProductJira, 'cloud', 'user1', true);
             cloudSite.credentialId = 'old-id'; // Set wrong ID to test correction
 
             storedSites.set(`${ProductJira.key}Sites`, [cloudSite]);
 
             const newSite = createDetailedSiteInfo(ProductJira, 'site2');
-            siteManager.addSites([newSite]);
+            await siteManager.addSites([newSite]);
 
             const updatedSites = siteManager.getSitesAvailable(ProductJira);
             expect(updatedSites[0].credentialId).toBe(`${ProductJira.key}-user1`);
@@ -177,7 +182,7 @@ describe('SiteManager', () => {
     });
 
     describe('addOrUpdateSite', () => {
-        it('should update an existing site', () => {
+        it('should update an existing site', async () => {
             const existingSite = createDetailedSiteInfo(ProductJira);
             const updatedSite = { ...existingSite, name: 'Updated Site' };
 
@@ -185,17 +190,17 @@ describe('SiteManager', () => {
 
             jest.spyOn(siteManager, 'updateSite');
 
-            siteManager.addOrUpdateSite(updatedSite);
+            await siteManager.addOrUpdateSite(updatedSite);
 
             expect(siteManager.updateSite).toHaveBeenCalledWith(existingSite, updatedSite);
         });
 
-        it('should add a new site if it does not exist', () => {
+        it('should add a new site if it does not exist', async () => {
             const newSite = createDetailedSiteInfo(ProductJira);
 
             jest.spyOn(siteManager, 'addSites');
 
-            siteManager.addOrUpdateSite(newSite);
+            await siteManager.addOrUpdateSite(newSite);
 
             expect(siteManager.addSites).toHaveBeenCalledWith([newSite]);
         });
@@ -207,7 +212,7 @@ describe('SiteManager', () => {
 
             storedSites.set(`${ProductJira.key}Sites`, [site]);
 
-            jest.spyOn(siteManager, 'removeSite').mockImplementation(() => true);
+            jest.spyOn(siteManager, 'removeSite').mockImplementation(() => Promise.resolve(true));
 
             const removeEvent: RemoveAuthInfoEvent = {
                 type: AuthChangeType.Remove,
@@ -218,7 +223,7 @@ describe('SiteManager', () => {
 
             siteManager.onDidAuthChange(removeEvent);
 
-            expect(siteManager.removeSite).toHaveBeenCalledWith(site);
+            expect(siteManager.removeSite).toHaveBeenCalledWith(site, false, false);
         });
 
         it('should fire sites available event when auth is updated', () => {
@@ -243,14 +248,14 @@ describe('SiteManager', () => {
     });
 
     describe('removeSite', () => {
-        it('should remove a site and clean up related resources', () => {
+        it('should remove a site and clean up related resources', async () => {
             const site = createDetailedSiteInfo(ProductJira, 'site1');
 
             storedSites.set(`${ProductJira.key}Sites`, [site]);
 
             jest.spyOn(configuration, 'setLastCreateSiteAndProject');
 
-            const result = siteManager.removeSite(site);
+            const result = await siteManager.removeSite(site);
 
             expect(result).toBe(true);
             expect(mockGlobalStore.update).toHaveBeenCalledWith(`${ProductJira.key}Sites`, []);
@@ -258,10 +263,10 @@ describe('SiteManager', () => {
             expect(configuration.setLastCreateSiteAndProject).toHaveBeenCalledWith(undefined);
         });
 
-        it('should return false if site is not found', () => {
+        it('should return false if site is not found', async () => {
             const site = createDetailedSiteInfo(ProductJira);
 
-            const result = siteManager.removeSite(site);
+            const result = await siteManager.removeSite(site);
 
             expect(result).toBe(false);
             expect(mockGlobalStore.update).not.toHaveBeenCalled();
@@ -393,6 +398,60 @@ describe('SiteManager', () => {
                 }),
             );
             expect(result.hostname).toBeUndefined();
+        });
+    });
+
+    describe('resolvePrimarySite', () => {
+        it('should set primarySite to undefined if no cloud sites exist', () => {
+            const serverSite = createDetailedSiteInfo(ProductJira, 'server', 'user1', false);
+            storedSites.set(`${ProductJira.key}Sites`, [serverSite]);
+
+            siteManager_resolvePrimarySite();
+
+            expect(siteManager.primarySite).toBeUndefined();
+        });
+
+        it('should set primarySite to the first cloud site sorted by name', () => {
+            const cloudSiteA = createDetailedSiteInfo(ProductJira, 'cloudA', 'userA', true);
+            cloudSiteA.name = 'Alpha';
+            const cloudSiteB = createDetailedSiteInfo(ProductJira, 'cloudB', 'userB', true);
+            cloudSiteB.name = 'Beta';
+            storedSites.set(`${ProductJira.key}Sites`, [cloudSiteB, cloudSiteA]);
+
+            siteManager_resolvePrimarySite();
+
+            expect(siteManager.primarySite).toEqual(cloudSiteA);
+        });
+
+        it('should not change primarySite if already set to the first cloud site', () => {
+            const cloudSiteA = createDetailedSiteInfo(ProductJira, 'cloudA', 'userA', true);
+            cloudSiteA.name = 'Alpha';
+            const cloudSiteB = createDetailedSiteInfo(ProductJira, 'cloudB', 'userB', true);
+            cloudSiteB.name = 'Beta';
+            storedSites.set(`${ProductJira.key}Sites`, [cloudSiteA, cloudSiteB]);
+
+            siteManager_resolvePrimarySite();
+            const firstPrimary = siteManager.primarySite;
+
+            // Call again, should not change
+            siteManager_resolvePrimarySite();
+            expect(siteManager.primarySite).toBe(firstPrimary);
+        });
+
+        it('should update primarySite when cloud sites change', () => {
+            const cloudSiteA = createDetailedSiteInfo(ProductJira, 'cloudA', 'userA', true);
+            cloudSiteA.name = 'Alpha';
+            storedSites.set(`${ProductJira.key}Sites`, [cloudSiteA]);
+
+            siteManager_resolvePrimarySite();
+            expect(siteManager.primarySite).toEqual(cloudSiteA);
+
+            const cloudSiteB = createDetailedSiteInfo(ProductJira, 'cloudB', 'userB', true);
+            cloudSiteB.name = 'Beta';
+            storedSites.set(`${ProductJira.key}Sites`, [cloudSiteB]);
+
+            siteManager_resolvePrimarySite();
+            expect(siteManager.primarySite).toEqual(cloudSiteB);
         });
     });
 });

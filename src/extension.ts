@@ -1,5 +1,9 @@
+/// <reference types="@emotion/react/types/css-prop" />
+// Reference above is a temporary fix for error: "Property 'css' does not exist on type 'IntrinsicAttributes & DropdownMenuProps<HTMLButtonElement>'"
+// TODO: review and remove this reference after update to newer version of react (18.0.0 or later)
+
 import { pid } from 'process';
-import * as semver from 'semver';
+import { gt as semver_gt } from 'semver';
 import { commands, env, ExtensionContext, extensions, languages, Memento, window } from 'vscode';
 
 import { installedEvent, launchedEvent, upgradedEvent } from './analytics';
@@ -8,8 +12,8 @@ import { startListening } from './atlclients/negotiate';
 import { BitbucketContext } from './bitbucket/bbContext';
 import { activate as activateCodebucket } from './codebucket/command/registerCommands';
 import { CommandContext, setCommandContext } from './commandContext';
-import { registerCommands } from './commands';
-import { Configuration, configuration, IConfig } from './config/configuration';
+import { registerCommands, registerRovoDevCommands } from './commands';
+import { Configuration } from './config/configuration';
 import { Commands, ExtensionId, GlobalStateVersionKey } from './constants';
 import { Container } from './container';
 import { registerAnalyticsClient, registerErrorReporting, unregisterErrorReporting } from './errorReporting';
@@ -22,14 +26,18 @@ import {
     BB_PIPELINES_FILENAME,
 } from './pipelines/yaml/pipelinesYamlHelper';
 import { registerResources } from './resources';
+import { RovodevStaticConfig } from './rovo-dev/api/rovodevStaticConfig';
+import { RovoDevProcessManager } from './rovo-dev/rovoDevProcessManager';
 import { GitExtension } from './typings/git';
-import { Experiments, FeatureFlagClient, Features } from './util/featureFlags';
+import { Features } from './util/featureFlags';
+import Performance from './util/perf';
 import { NotificationManagerImpl } from './views/notifications/notificationManager';
 
 const AnalyticDelay = 5000;
+const PerfStartMarker = 'extension.start';
 
 export async function activate(context: ExtensionContext) {
-    const start = process.hrtime();
+    Performance.mark(PerfStartMarker);
 
     registerErrorReporting();
 
@@ -42,26 +50,33 @@ export async function activate(context: ExtensionContext) {
     Configuration.configure(context);
     Logger.configure(context);
 
+    // this disables the main Atlassian activity bar when we are in Boysenberry,
+    setCommandContext(CommandContext.BbyEnvironmentActive, RovodevStaticConfig.isBBY);
+
     // Mark ourselves as the PID in charge of refreshing credentials and start listening for pings.
     context.globalState.update('rulingPid', pid);
 
     try {
-        await Container.initialize(context, configuration.get<IConfig>(), atlascodeVersion);
+        await Container.initialize(context, atlascodeVersion);
 
         activateErrorReporting();
-        registerCommands(context);
-        activateCodebucket(context);
+        registerRovoDevCommands(context);
 
-        setCommandContext(
-            CommandContext.IsJiraAuthenticated,
-            Container.siteManager.productHasAtLeastOneSite(ProductJira),
-        );
-        setCommandContext(
-            CommandContext.IsBBAuthenticated,
-            Container.siteManager.productHasAtLeastOneSite(ProductBitbucket),
-        );
+        if (!RovodevStaticConfig.isBBY) {
+            registerCommands(context);
+            activateCodebucket(context);
 
-        NotificationManagerImpl.getInstance().listen();
+            setCommandContext(
+                CommandContext.IsJiraAuthenticated,
+                Container.siteManager.productHasAtLeastOneSite(ProductJira),
+            );
+            setCommandContext(
+                CommandContext.IsBBAuthenticated,
+                Container.siteManager.productHasAtLeastOneSite(ProductBitbucket),
+            );
+
+            NotificationManagerImpl.getInstance().listen();
+        }
     } catch (e) {
         Logger.error(e, 'Error initializing atlascode!');
     }
@@ -70,16 +85,12 @@ export async function activate(context: ExtensionContext) {
         Container.clientManager.requestSite(site);
     });
 
-    // new user for auth exp
-    if (previousVersion === undefined) {
-        const expVal = FeatureFlagClient.checkExperimentValue(Experiments.AtlascodeOnboardingExperiment);
-        if (expVal) {
+    if (!RovodevStaticConfig.isBBY) {
+        if (previousVersion === undefined) {
             commands.executeCommand(Commands.ShowOnboardingFlow);
         } else {
-            commands.executeCommand(Commands.ShowOnboardingPage);
+            showWelcomePage(atlascodeVersion, previousVersion);
         }
-    } else {
-        showWelcomePage(atlascodeVersion, previousVersion);
     }
 
     const delay = Math.floor(Math.random() * Math.floor(AnalyticDelay));
@@ -87,24 +98,24 @@ export async function activate(context: ExtensionContext) {
         sendAnalytics(atlascodeVersion, context.globalState);
     }, delay);
 
-    const duration = process.hrtime(start);
-    context.subscriptions.push(languages.registerCodeLensProvider({ scheme: 'file' }, { provideCodeLenses }));
+    if (!RovodevStaticConfig.isBBY) {
+        context.subscriptions.push(languages.registerCodeLensProvider({ scheme: 'file' }, { provideCodeLenses }));
 
-    // Following are async functions called without await so that they are run
-    // in the background and do not slow down the time taken for the extension
-    // icon to appear in the activity bar
-    activateBitbucketFeatures();
-    activateYamlFeatures(context);
+        // Following are async functions called without await so that they are run
+        // in the background and do not slow down the time taken for the extension
+        // icon to appear in the activity bar
+        activateBitbucketFeatures();
+        activateYamlFeatures(context);
+    } else {
+        commands.executeCommand('workbench.view.extension.atlascode-rovo-dev');
+    }
 
-    Logger.info(
-        `Atlassian for VS Code (v${atlascodeVersion}) activated in ${
-            duration[0] * 1000 + Math.floor(duration[1] / 1000000)
-        } ms`,
-    );
+    const duration = Performance.measureAndClear(PerfStartMarker);
+    Logger.info(`Atlassian for VS Code (v${atlascodeVersion}) activated in ${duration} ms`);
 }
 
 function activateErrorReporting(): void {
-    if (FeatureFlagClient.checkGate(Features.EnableErrorTelemetry)) {
+    if (Container.isDebugging || Container.featureFlagClient.checkGate(Features.EnableErrorTelemetry)) {
         registerAnalyticsClient(Container.analyticsClient);
     } else {
         unregisterErrorReporting();
@@ -150,7 +161,7 @@ async function activateYamlFeatures(context: ExtensionContext) {
 
 async function showWelcomePage(version: string, previousVersion: string | undefined) {
     if (
-        (previousVersion === undefined || semver.gt(version, previousVersion)) &&
+        (previousVersion === undefined || semver_gt(version, previousVersion)) &&
         Container.config.showWelcomeOnInstall &&
         window.state.focused
     ) {
@@ -172,10 +183,11 @@ async function sendAnalytics(version: string, globalState: Memento) {
         installedEvent(version).then((e) => {
             Container.analyticsClient.sendTrackEvent(e);
         });
+
         return;
     }
 
-    if (semver.gt(version, previousVersion)) {
+    if (semver_gt(version, previousVersion)) {
         Logger.info(`Atlassian for VS Code upgraded from v${previousVersion} to v${version}`);
         upgradedEvent(version, previousVersion).then((e) => {
             Container.analyticsClient.sendTrackEvent(e);
@@ -183,11 +195,15 @@ async function sendAnalytics(version: string, globalState: Memento) {
     }
 
     launchedEvent(
-        env.remoteName ? env.remoteName : 'local',
+        env.remoteName || 'local',
+        env.uriScheme,
         Container.siteManager.numberOfAuthedSites(ProductJira, true),
         Container.siteManager.numberOfAuthedSites(ProductJira, false),
         Container.siteManager.numberOfAuthedSites(ProductBitbucket, true),
         Container.siteManager.numberOfAuthedSites(ProductBitbucket, false),
+        Container.config.jira.enabled,
+        Container.config.bitbucket.enabled,
+        Container.config.rovodev.enabled,
     ).then((e) => {
         Container.analyticsClient.sendTrackEvent(e);
     });
@@ -195,7 +211,11 @@ async function sendAnalytics(version: string, globalState: Memento) {
 
 // this method is called when your extension is deactivated
 export function deactivate() {
+    if (!RovodevStaticConfig.isBBY) {
+        RovoDevProcessManager.deactivateRovoDevProcessManager();
+        NotificationManagerImpl.getInstance().stopListening();
+    }
+
     unregisterErrorReporting();
-    FeatureFlagClient.dispose();
-    NotificationManagerImpl.getInstance().stopListening();
+    Container.featureFlagClient.dispose();
 }

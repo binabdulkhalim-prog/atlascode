@@ -1,7 +1,7 @@
-import { IssueType, Project } from '@atlassianlabs/jira-pi-common-models';
+import { IssueType, MinimalORIssueLink, Project } from '@atlassianlabs/jira-pi-common-models';
 import { CreateMetaTransformerResult, FieldUI, IssueTypeUI, ValueType } from '@atlassianlabs/jira-pi-meta-models';
 import { expansionCastTo } from 'testsutil';
-import { Position, Uri } from 'vscode';
+import { Position, Uri, window } from 'vscode';
 
 import { DetailedSiteInfo, emptySiteInfo, ProductJira } from '../atlclients/authInfo';
 import { configuration } from '../config/configuration';
@@ -9,6 +9,7 @@ import { Container } from '../container';
 import * as fetchIssue from '../jira/fetchIssue';
 import { WebViewID } from '../lib/ipc/models/common';
 import { Logger } from '../logger';
+import { SearchJiraHelper } from '../views/jira/searchJiraHelper';
 import { CreateIssueWebview, PartialIssue } from './createIssueWebview';
 
 jest.mock('../container', () => ({
@@ -20,20 +21,24 @@ jest.mock('../container', () => ({
             getSiteForId: jest.fn(),
             getFirstSite: jest.fn(),
             getSitesAvailable: jest.fn(),
+            getFirstAAID: jest.fn(),
         },
         jiraProjectManager: {
             getFirstProject: jest.fn(),
             getProjectForKey: jest.fn(),
             getProjects: jest.fn(),
+            getProjectsPaginated: jest.fn(),
+            filterProjectsByPermission: jest.fn(),
         },
         pmfStats: {
             touchActivity: jest.fn(),
         },
         config: {
             jira: {
-                lastCreateSiteAndProject: {
+                lastCreatePreSelectedValues: {
                     siteId: '',
                     projectKey: '',
+                    issueTypeId: '',
                 },
                 showCreateIssueProblems: false,
             },
@@ -44,10 +49,16 @@ jest.mock('../container', () => ({
         createIssueProblemsWebview: {
             createOrShow: jest.fn(),
         },
+        machineId: 'test-machine-id',
+        rovodevWebviewProvider: {
+            setPromptTextWithFocus: jest.fn(),
+        },
+        isRovoDevEnabled: true,
     },
 }));
 
 jest.mock('../config/configuration', () => ({
+    ...jest.requireActual('../config/configuration'),
     configuration: {
         setLastCreateSiteAndProject: jest.fn().mockResolvedValue(undefined),
     },
@@ -73,6 +84,39 @@ jest.mock('form-data', () => ({
     default: jest.fn(() => ({ append: jest.fn() })),
 }));
 
+jest.mock('../commands/jira/showIssue', () => ({
+    showIssue: jest.fn(),
+}));
+
+jest.mock('../commands/jira/startWorkOnIssue', () => ({
+    startWorkOnIssue: jest.fn(),
+}));
+
+// Added feature flag mock as with jiraIssueWebview.test.ts
+jest.mock('src/util/featureFlags', () => ({
+    FeatureFlagClient: {
+        checkExperimentValue: jest.fn(),
+    },
+    Experiments: {
+        AtlascodePerformanceExperiment: 'atlascode-performance-experiment',
+    },
+}));
+
+jest.mock('../views/jira/searchJiraHelper', () => ({
+    SearchJiraHelper: {
+        getAssignedIssuesPerSite: jest.fn().mockReturnValue([]),
+    },
+}));
+
+jest.mock('../analytics', () => ({
+    authenticatedEvent: jest.fn(),
+    editedEvent: jest.fn(),
+    loggedOutEvent: jest.fn(),
+    issueCreatedEvent: jest.fn().mockResolvedValue({}),
+    jiraIssuePerformanceEvent: jest.fn().mockResolvedValue({}),
+}));
+
+const mockWindow = window as jest.Mocked<typeof window>;
 describe('CreateIssueWebview', () => {
     // Mock data
     const extensionPath = '/path/to/extension';
@@ -129,6 +173,11 @@ describe('CreateIssueWebview', () => {
     beforeEach(() => {
         jest.clearAllMocks();
 
+        // Mock FeatureFlagClient to return false by default (performance disabled)
+        (Container.featureFlagClient as any) = {
+            checkExperimentValue: jest.fn().mockReturnValue(false),
+        };
+
         // Setup mocks
         Container.siteManager.getSiteForId = jest.fn().mockReturnValue(mockSiteDetails);
         Container.siteManager.getFirstSite = jest.fn().mockReturnValue(mockSiteDetails);
@@ -137,6 +186,12 @@ describe('CreateIssueWebview', () => {
         Container.jiraProjectManager.getFirstProject = jest.fn().mockResolvedValue(mockProject);
         Container.jiraProjectManager.getProjectForKey = jest.fn().mockResolvedValue(mockProject);
         Container.jiraProjectManager.getProjects = jest.fn().mockResolvedValue([mockProject]);
+        Container.jiraProjectManager.getProjectsPaginated = jest.fn().mockResolvedValue({
+            projects: [mockProject],
+            total: 1,
+            hasMore: false,
+        });
+        Container.jiraProjectManager.filterProjectsByPermission = jest.fn().mockResolvedValue([mockProject]);
 
         Container.clientManager.jiraClient = jest.fn().mockResolvedValue(mockClient);
 
@@ -158,6 +213,47 @@ describe('CreateIssueWebview', () => {
             expect(webview.id).toBe(WebViewID.CreateJiraIssueWebview);
             expect(webview.siteOrUndefined).toEqual(emptySiteInfo);
             expect(webview.productOrUndefined).toEqual(ProductJira);
+        });
+    });
+
+    describe('onPanelDisposed', () => {
+        it('should reset data and call super onPanelDisposed', () => {
+            // Setup webview with some data
+            Object.defineProperty(webview, '_screenData', {
+                value: mockCreateMetaResult,
+                writable: true,
+            });
+            Object.defineProperty(webview, '_siteDetails', {
+                value: mockSiteDetails,
+                writable: true,
+            });
+
+            const superOnPanelDisposedSpy = jest.spyOn(
+                Object.getPrototypeOf(Object.getPrototypeOf(webview)),
+                'onPanelDisposed',
+            );
+
+            // Call onPanelDisposed
+            (webview as any).onPanelDisposed();
+
+            // Verify data was reset
+            expect((webview as any)._screenData).toEqual({
+                selectedIssueType: {
+                    id: 'empty',
+                    name: 'empty',
+                    iconUrl: '',
+                    avatarId: -1,
+                    description: 'empty',
+                    epic: false,
+                    self: '',
+                    subtask: false,
+                },
+                issueTypeUIs: {},
+                problems: {},
+                issueTypes: [],
+            });
+            expect((webview as any)._siteDetails).toEqual(emptySiteInfo);
+            expect(superOnPanelDisposedSpy).toHaveBeenCalled();
         });
     });
 
@@ -226,7 +322,14 @@ describe('CreateIssueWebview', () => {
 
             expect(fetchIssue.fetchCreateIssueUI).toHaveBeenCalledWith(mockSiteDetails, mockProject.key);
             expect(Container.siteManager.getSitesAvailable).toHaveBeenCalledWith(ProductJira);
-            expect(Container.jiraProjectManager.getProjects).toHaveBeenCalledWith(mockSiteDetails);
+            expect(Container.jiraProjectManager.getProjectsPaginated).toHaveBeenCalledWith(
+                mockSiteDetails,
+                50,
+                0,
+                'key',
+                undefined,
+                'create',
+            );
             expect(webviewPostMessageMock).toHaveBeenCalled();
         });
 
@@ -257,6 +360,118 @@ describe('CreateIssueWebview', () => {
 
             expect(Logger.error).toHaveBeenCalled();
             expect(webviewPostMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+        });
+
+        it('should handle empty site details when Refeshing', async () => {
+            Object.defineProperty(webview, '_siteDetails', {
+                value: emptySiteInfo,
+                writable: true,
+            });
+            Object.defineProperty(webview, 'isRefeshing', {
+                value: true,
+                writable: true,
+            });
+
+            const result = await webview.forceUpdateFields();
+            expect(result).toBeUndefined();
+        });
+
+        it('should use provided field values', async () => {
+            const fieldValues = {
+                summary: 'Test summary',
+                description: 'Test description',
+            };
+
+            await webview.forceUpdateFields(fieldValues);
+            expect(webviewPostMessageMock).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    type: 'update',
+                    fieldValues: expect.objectContaining({
+                        summary: 'Test summary',
+                        description: 'Test description',
+                    }),
+                }),
+            );
+        });
+
+        it('should use performance-enabled path when feature flag is enabled', async () => {
+            // Enable performance feature flag
+            (Container.featureFlagClient.checkExperimentValue as jest.Mock).mockReturnValue(true);
+
+            await webview.forceUpdateFields();
+
+            expect(Container.jiraProjectManager.getProjectsPaginated).toHaveBeenCalledWith(
+                mockSiteDetails,
+                50,
+                0,
+                'key',
+                undefined,
+                'create',
+            );
+            expect(fetchIssue.fetchCreateIssueUI).toHaveBeenCalledWith(mockSiteDetails, mockProject.key);
+            expect(webviewPostMessageMock).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    type: 'update',
+                }),
+            );
+        });
+
+        it('should handle project without permission in performance mode', async () => {
+            // Enable performance feature flag
+            (Container.featureFlagClient.checkExperimentValue as jest.Mock).mockReturnValue(true);
+
+            // Mock project without permission
+            const projectWithoutPermission = { ...mockProject, id: 'different-id' };
+            Object.defineProperty(webview, '_currentProject', {
+                value: projectWithoutPermission,
+                writable: true,
+            });
+
+            // Mock projects with permission (different from current)
+            Container.jiraProjectManager.getProjectsPaginated = jest.fn().mockResolvedValue({
+                projects: [mockProject],
+                total: 1,
+                hasMore: false,
+            });
+
+            await webview.forceUpdateFields();
+
+            // Should select first project with permission
+            expect(webviewPostMessageMock).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    type: 'update',
+                    fieldValues: expect.objectContaining({
+                        project: mockProject,
+                    }),
+                }),
+            );
+        });
+
+        it('should handle partial issue in performance mode', async () => {
+            // Enable performance feature flag
+            (Container.featureFlagClient.checkExperimentValue as jest.Mock).mockReturnValue(true);
+
+            const partialIssue: PartialIssue = {
+                summary: 'Partial Summary',
+                description: 'Partial Description',
+            };
+
+            Object.defineProperty(webview, '_partialIssue', {
+                value: partialIssue,
+                writable: true,
+            });
+
+            await webview.forceUpdateFields();
+
+            expect(webviewPostMessageMock).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    type: 'update',
+                    fieldValues: expect.objectContaining({
+                        summary: 'Partial Summary',
+                        description: 'Partial Description',
+                    }),
+                }),
+            );
         });
     });
 
@@ -326,6 +541,58 @@ describe('CreateIssueWebview', () => {
                     }),
                     selectFieldOptions: expect.objectContaining({
                         [fieldKey]: [newValue],
+                    }),
+                    fieldKey,
+                    nonce,
+                }),
+            );
+        });
+
+        it('should handle Version field type with nested options', async () => {
+            const fieldKey = 'fixVersions';
+            const newValue = { id: 'version-1', name: 'Version 1.0' };
+            const nonce = '123456';
+
+            Object.defineProperty(webview, '_selectedIssueTypeId', {
+                value: 'issueType-1',
+                writable: true,
+            });
+
+            Object.defineProperty(webview, '_screenData', {
+                value: {
+                    issueTypeUIs: {
+                        'issueType-1': {
+                            fieldValues: { [fieldKey]: [] },
+                            selectFieldOptions: {
+                                [fieldKey]: [
+                                    {
+                                        options: [{ id: 'existing-version', name: 'Existing Version' }],
+                                    },
+                                ],
+                            },
+                            fields: {
+                                [fieldKey]: { valueType: ValueType.Version },
+                            },
+                        },
+                    },
+                },
+                writable: true,
+            });
+
+            await webview.handleSelectOptionCreated(fieldKey, newValue, nonce);
+
+            expect(webviewPostMessageMock).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    type: 'optionCreated',
+                    fieldValues: expect.objectContaining({
+                        [fieldKey]: [newValue],
+                    }),
+                    selectFieldOptions: expect.objectContaining({
+                        [fieldKey]: [
+                            {
+                                options: [{ id: 'existing-version', name: 'Existing Version' }, newValue],
+                            },
+                        ],
                     }),
                     fieldKey,
                     nonce,
@@ -703,6 +970,261 @@ describe('CreateIssueWebview', () => {
             // Verify
             expect(result).toHaveLength(0);
             expect(result).toEqual([]);
+        });
+    });
+
+    describe('onMessageReceived', () => {
+        const mockShowIssue = require('../commands/jira/showIssue').showIssue;
+        const mockStartWorkOnIssue = require('../commands/jira/startWorkOnIssue').startWorkOnIssue;
+
+        const mockMessage = {
+            action: 'createIssue',
+            issueData: {
+                summary: 'Summary',
+                issuetype: mockIssueType,
+                project: mockProject,
+            },
+            site: mockSiteDetails,
+            nonce: 'test-nonce',
+        };
+
+        beforeEach(() => {
+            mockClient.createIssue.mockResolvedValue({ key: 'TEST-123' });
+            mockWindow.showInformationMessage = jest.fn().mockResolvedValue(undefined);
+
+            Object.defineProperty(webview, '_siteDetails', {
+                value: mockSiteDetails,
+                writable: true,
+            });
+            Object.defineProperty(webview, '_currentProject', {
+                value: mockProject,
+                writable: true,
+            });
+        });
+
+        it('should show Jira Issue on successful issue creation', async () => {
+            await (webview as any).onMessageReceived(mockMessage);
+
+            expect(mockShowIssue).toHaveBeenCalledWith({
+                key: 'TEST-123',
+                siteDetails: mockSiteDetails,
+            });
+        });
+
+        it('should call startWorkOnIssue when user clicks Create and create branch button', async () => {
+            const message = { ...mockMessage, onCreateAction: 'createAndStartWork' as const };
+            await (webview as any).onMessageReceived(message);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            expect(mockStartWorkOnIssue).toHaveBeenCalledWith({
+                key: 'TEST-123',
+                siteDetails: mockSiteDetails,
+            });
+        });
+
+        it('should call Rovo Dev webview provider when user clicks Create and generate code button', async () => {
+            const message = { ...mockMessage, onCreateAction: 'createAndGenerateCode' as const };
+            const issueUrl = `${mockSiteDetails.baseLinkUrl}/browse/TEST-123`;
+            await (webview as any).onMessageReceived(message);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(Container.rovodevWebviewProvider.setPromptTextWithFocus).toHaveBeenCalledWith(
+                'Work on the attached Jira work item',
+                {
+                    contextType: 'jiraWorkItem',
+                    name: 'TEST-123',
+                    url: issueUrl,
+                },
+            );
+        });
+
+        it('should handle refresh action', async () => {
+            const refreshMessage = { action: 'refresh' };
+            const forceUpdateSpy = jest.spyOn(webview, 'forceUpdateFields').mockImplementation(async () => {});
+
+            const result = await (webview as any).onMessageReceived(refreshMessage);
+
+            expect(forceUpdateSpy).toHaveBeenCalled();
+            expect(result).toBe(true);
+        });
+
+        it('should handle setIssueType action', async () => {
+            const validIssueType = {
+                ...mockIssueType,
+                self: 'https://test.atlassian.net/rest/api/2/issuetype/1',
+                description: 'Bug issue type',
+                avatarId: 1,
+                subtask: false,
+                epic: false,
+            };
+            const setIssueTypeMessage = {
+                action: 'setIssueType',
+                issueType: validIssueType,
+                fieldValues: { summary: 'Test' },
+            };
+            const updateIssueTypeSpy = jest.spyOn(webview, 'updateIssueType').mockImplementation(() => {});
+
+            const result = await (webview as any).onMessageReceived(setIssueTypeMessage);
+
+            expect(updateIssueTypeSpy).toHaveBeenCalledWith(validIssueType, { summary: 'Test' });
+            expect(result).toBe(true);
+        });
+
+        it('should handle refreshTreeViews action', async () => {
+            const refreshTreeViewsMessage = { action: 'refreshTreeViews' };
+            const executeCommandSpy = jest
+                .spyOn(require('vscode').commands, 'executeCommand')
+                .mockImplementation(() => Promise.resolve());
+
+            const result = await (webview as any).onMessageReceived(refreshTreeViewsMessage);
+
+            expect(executeCommandSpy).toHaveBeenCalledWith('atlascode.jira.refreshAssignedWorkItemsExplorer', 4000);
+            expect(executeCommandSpy).toHaveBeenCalledWith('atlascode.jira.refreshCustomJqlExplorer', 4000);
+            expect(result).toBe(true);
+        });
+
+        it('should handle openProblemReport action', async () => {
+            const openProblemMessage = { action: 'openProblemReport' };
+
+            const result = await (webview as any).onMessageReceived(openProblemMessage);
+
+            expect(Container.createIssueProblemsWebview.createOrShow).toHaveBeenCalledWith(
+                undefined,
+                mockSiteDetails,
+                mockProject,
+            );
+            expect(result).toBe(true);
+        });
+    });
+
+    describe('Should correctly set site, project and issueTypeId (updateSiteAndProject)', () => {
+        beforeEach(() => {
+            Container.config.jira.lastCreatePreSelectedValues = {
+                siteId: '',
+                projectKey: '',
+                issueTypeId: '',
+            };
+            jest.spyOn(SearchJiraHelper, 'getAssignedIssuesPerSite').mockReturnValue([]);
+        });
+
+        it('should set site and project from last used values', async () => {
+            const lastUsedSiteId = 'last-used-site';
+            const lastUsedProjectKey = 'last-used-project';
+
+            Container.config.jira.lastCreatePreSelectedValues = {
+                siteId: lastUsedSiteId,
+                projectKey: lastUsedProjectKey,
+                issueTypeId: '',
+            };
+
+            Container.siteManager.getSiteForId = jest.fn().mockReturnValue({
+                ...mockSiteDetails,
+                id: lastUsedSiteId,
+            });
+            Container.jiraProjectManager.getProjectForKey = jest.fn().mockReturnValue({
+                ...mockProject,
+                key: lastUsedProjectKey,
+            });
+
+            await webview.initialize();
+            expect(configuration.setLastCreateSiteAndProject).toHaveBeenCalledWith({
+                siteId: lastUsedSiteId,
+                projectKey: lastUsedProjectKey,
+                issueTypeId: '',
+            });
+        });
+
+        it('should set site and project with maximum issues', async () => {
+            Container.siteManager.getSiteForId = jest.fn().mockReturnValueOnce(undefined);
+
+            const maxIssuesSite = {
+                ...mockSiteDetails,
+                id: 'max-issues-site',
+            };
+            const maxIssuesProject = {
+                ...mockProject,
+                key: 'max-issues-project',
+            };
+
+            Container.jiraProjectManager.getProjectForKey = jest
+                .fn()
+                .mockReturnValueOnce(undefined)
+                .mockReturnValueOnce(maxIssuesProject);
+
+            Container.siteManager.getSitesAvailable = jest.fn().mockReturnValueOnce([maxIssuesSite]);
+
+            jest.spyOn(SearchJiraHelper, 'getAssignedIssuesPerSite').mockReturnValue([
+                { id: 'mock', key: 'TST-1' } as MinimalORIssueLink<DetailedSiteInfo>,
+                { id: 'mock', key: 'TST-2' } as MinimalORIssueLink<DetailedSiteInfo>,
+                { id: 'mock', key: 'TSR-1' } as MinimalORIssueLink<DetailedSiteInfo>,
+            ]);
+
+            await webview.initialize();
+            expect(configuration.setLastCreateSiteAndProject).toHaveBeenCalledWith({
+                siteId: maxIssuesSite.id,
+                projectKey: maxIssuesProject.key,
+                issueTypeId: '',
+            });
+        });
+
+        it('should set site and project from first available site and project', async () => {
+            Container.siteManager.getSiteForId = jest.fn().mockReturnValueOnce(undefined);
+            Container.jiraProjectManager.getProjectForKey = jest.fn().mockReturnValueOnce(undefined);
+
+            Container.siteManager.getFirstSite = jest.fn().mockReturnValue({ ...mockSiteDetails, id: 'first-site' });
+            Container.jiraProjectManager.getFirstProject = jest
+                .fn()
+                .mockResolvedValue({ ...mockProject, key: 'first-project' });
+
+            await webview.initialize();
+            expect(configuration.setLastCreateSiteAndProject).toHaveBeenCalledWith({
+                siteId: 'first-site',
+                projectKey: 'first-project',
+                issueTypeId: '',
+            });
+        });
+
+        it('should use provided project if available', async () => {
+            const inputProject: Project = {
+                ...mockProject,
+                key: 'input-project',
+            };
+
+            await webview.initialize();
+            expect(configuration.setLastCreateSiteAndProject).toHaveBeenCalled();
+
+            const action = {
+                action: 'getScreensForProject',
+                project: inputProject,
+            };
+            await webview['onMessageReceived'](action);
+
+            expect(configuration.setLastCreateSiteAndProject).toHaveBeenLastCalledWith({
+                projectKey: inputProject.key,
+                siteId: 'site-1',
+                issueTypeId: 'issueType-1',
+            });
+        });
+
+        it('should use provided site if available', async () => {
+            const inputSite: DetailedSiteInfo = {
+                ...mockSiteDetails,
+                id: 'input-site',
+            };
+
+            await webview.initialize();
+            expect(configuration.setLastCreateSiteAndProject).toHaveBeenCalled();
+
+            const action = {
+                action: 'getScreensForSite',
+                site: { id: inputSite.id },
+            };
+            await webview['onMessageReceived'](action);
+
+            expect(configuration.setLastCreateSiteAndProject).toHaveBeenLastCalledWith({
+                siteId: inputSite.id,
+                projectKey: 'TEST',
+                issueTypeId: 'issueType-1',
+            });
         });
     });
 });

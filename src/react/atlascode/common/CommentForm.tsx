@@ -1,4 +1,4 @@
-import { Avatar, Grid } from '@material-ui/core';
+import { Avatar, Grid } from '@mui/material';
 import React from 'react';
 
 import { User } from '../../../bitbucket/model';
@@ -10,11 +10,12 @@ type CommentFormProps = {
     onSave: (content: string) => Promise<void>;
     onCancel?: () => void;
     fetchUsers?: (input: string) => Promise<User[]>;
+    handleEditorFocus: (isFocused: boolean) => void;
 };
 
 const CommentForm: React.FC<CommentFormProps> = (props: CommentFormProps) => {
     return (
-        <Grid container spacing={1} alignItems="flex-start">
+        <Grid container spacing={1} alignItems="flex-start" data-testid="common.comment-form">
             <Grid item>
                 <Avatar src={props.currentUser.avatarUrl} />
             </Grid>
@@ -26,6 +27,8 @@ const CommentForm: React.FC<CommentFormProps> = (props: CommentFormProps) => {
                             onSave={props.onSave}
                             onCancel={props.onCancel}
                             fetchUsers={props.fetchUsers}
+                            onFocus={() => props.handleEditorFocus(true)}
+                            onBlur={() => props.handleEditorFocus(false)}
                         />
                     </Grid>
                 </Grid>

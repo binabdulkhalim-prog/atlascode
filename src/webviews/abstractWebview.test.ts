@@ -25,8 +25,20 @@ jest.mock('../container', () => ({
             sendScreenEvent: jest.fn(),
             sendTrackEvent: jest.fn(),
         },
+        featureFlagClient: {
+            checkGate: jest.fn().mockReturnValue(false),
+            checkExperimentValue: jest.fn().mockReturnValue(undefined),
+        },
         analyticsApi: {
             fireUIErrorEvent: jest.fn(),
+        },
+        credentialManager: {
+            onDidAuthChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+        },
+        siteManager: {
+            onDidSitesAvailableChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+            getSiteForId: jest.fn(),
+            getSitesAvailable: jest.fn().mockReturnValue([]),
         },
     },
 }));
@@ -59,6 +71,8 @@ jest.mock('mustache', () => ({
     },
 }));
 
+const handleContextMenuMock = jest.fn();
+
 // Mock implementation of AbstractReactWebview for testing
 class TestReactWebview extends AbstractReactWebview {
     get title(): string {
@@ -80,14 +94,12 @@ class TestReactWebview extends AbstractReactWebview {
     get productOrUndefined(): Product | undefined {
         return undefined;
     }
-}
 
-jest.mock('../util/featureFlags', () => ({
-    FeatureFlagClient: {
-        checkGate: jest.fn().mockReturnValue(false),
-        checkExperimentValue: jest.fn().mockReturnValue(undefined),
-    },
-}));
+    handleContextMenuCommand({ action, data }: { action: string; data: Record<string, string | boolean> }): void {
+        handleContextMenuMock(action, data);
+        return;
+    }
+}
 
 // Test implementation of InitializingWebview
 class TestInitializingWebview implements InitializingWebview<string> {
@@ -126,6 +138,23 @@ describe('abstractWebview', () => {
             expect(typeof webview.onDidPanelDispose).toBe('function');
             expect(typeof webview.invalidate).toBe('function');
             expect(webview.dispose).toBeDefined();
+        });
+
+        it('should support optional handleContextMenuCommand method', () => {
+            const webview = new TestReactWebview('/test/path');
+            if (webview.handleContextMenuCommand) {
+                expect(typeof webview.handleContextMenuCommand).toBe('function');
+                console.log('Testing handleContextMenuCommand method');
+                const contextMenuData = {
+                    action: 'testAction',
+                    data: { key1: 'value1', key2: true },
+                };
+                webview.handleContextMenuCommand!(contextMenuData);
+
+                expect(handleContextMenuMock).toHaveBeenCalledWith(contextMenuData.action, contextMenuData.data);
+            } else {
+                expect(webview.handleContextMenuCommand).toBeUndefined();
+            }
         });
     });
 

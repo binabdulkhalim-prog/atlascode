@@ -1,4 +1,5 @@
-import vscode, { ConfigurationChangeEvent, Disposable } from 'vscode';
+import { ConfigurationChangeEvent, Disposable } from 'vscode';
+import * as vscode from 'vscode';
 
 import { ProductBitbucket } from '../atlclients/authInfo';
 import { BitbucketContext } from '../bitbucket/bbContext';
@@ -72,7 +73,7 @@ export abstract class BitbucketExplorer extends Explorer implements Disposable {
         }
     }
 
-    dispose() {
+    override dispose() {
         super.dispose();
         this._disposable.dispose();
     }

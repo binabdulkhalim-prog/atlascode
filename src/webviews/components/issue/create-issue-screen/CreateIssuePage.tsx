@@ -1,13 +1,12 @@
 import Button from '@atlaskit/button';
-import LoadingButton from '@atlaskit/button/loading-button';
-import Form, { Field, FormFooter, FormHeader, RequiredAsterisk } from '@atlaskit/form';
+import Form, { ErrorMessage, Field, FormFooter, FormHeader, RequiredAsterisk } from '@atlaskit/form';
 import Page from '@atlaskit/page';
-import SectionMessage from '@atlaskit/section-message';
 import Select, { components } from '@atlaskit/select';
 import Spinner from '@atlaskit/spinner';
 import { IssueKeyAndSite } from '@atlassianlabs/jira-pi-common-models';
-import { FieldUI, UIType, ValueType } from '@atlassianlabs/jira-pi-meta-models';
+import { FieldUI, FieldValues, UIType, ValueType } from '@atlassianlabs/jira-pi-meta-models';
 import * as React from 'react';
+import { v4 } from 'uuid';
 
 import { AnalyticsView } from '../../../../analyticsTypes';
 import { DetailedSiteInfo, emptySiteInfo } from '../../../../atlclients/authInfo';
@@ -27,47 +26,100 @@ import {
     CommonEditorViewState,
     emptyCommonEditorState,
 } from '../AbstractIssueEditorPage';
+import { convertWikimarkupToAdf } from '../common/adfToWikimarkup';
+import { MissingScopesBanner } from '../common/missing-scopes-banner/MissingScopesBanner';
+import { CreateIssueButton } from './actions/CreateIssueButton';
 import { Panel } from './Panel';
 
 type Emit = CommonEditorPageEmit;
 type Accept = CommonEditorPageAccept | CreateIssueData;
 interface ViewState extends CommonEditorViewState, CreateIssueData {
-    isCreateBannerOpen: boolean;
     createdIssue: IssueKeyAndSite<DetailedSiteInfo>;
+    formKey: string;
+    onCreateAction: 'createAndView' | 'createAndStartWork' | 'createAndGenerateCode';
 }
 
 const emptyState: ViewState = {
     ...emptyCommonEditorState,
     ...emptyCreateIssueData,
-    isCreateBannerOpen: false,
     createdIssue: { key: '', siteDetails: emptySiteInfo },
+    formKey: v4(),
+    onCreateAction: 'createAndView',
 };
 
-const IconOption = (props: any) => (
-    <components.Option {...props}>
-        <div ref={props.innerRef} {...props.innerProps} style={{ display: 'flex', alignItems: 'center' }}>
-            <img src={props.data.avatarUrl} width="24" height="24" alt={props.data.name || 'Avatar'} />
-            <span style={{ marginLeft: '10px' }}>{props.data.name}</span>
-        </div>
-    </components.Option>
-);
+const fallbackTimerDuration = 5000; // 5 seconds
 
-const IconValue = (props: any) => (
-    <components.SingleValue {...props}>
-        <div style={{ display: 'flex', alignItems: 'center' }}>
-            <img src={props.data.avatarUrl} width="16" height="16" alt={props.data.name || 'Avatar'} />
-            <span style={{ marginLeft: '10px' }}>{props.data.name}</span>
-        </div>
-    </components.SingleValue>
-);
+const getFaviconUrl = (siteData: any): string | null => {
+    if (siteData?.baseLinkUrl) {
+        return `${siteData.baseLinkUrl}/favicon.ico`;
+    } else if (siteData?.host) {
+        return `https://${siteData.host}/favicon.ico`;
+    }
+    return null;
+};
+
+const IconOption = (props: any) => {
+    const fallbackImg = 'images/jira-icon.svg';
+    const avatarUrl = getFaviconUrl(props.data) || fallbackImg;
+
+    return (
+        <components.Option {...props}>
+            <div ref={props.innerRef} {...props.innerProps} style={{ display: 'flex', alignItems: 'center' }}>
+                <img
+                    src={avatarUrl}
+                    width="24"
+                    height="24"
+                    alt={props.data?.name || 'Avatar'}
+                    onError={(e) => {
+                        if (e.currentTarget.src !== fallbackImg) {
+                            e.currentTarget.src = fallbackImg;
+                        }
+                    }}
+                />
+                <span style={{ marginLeft: '10px' }}>{props.data?.name}</span>
+            </div>
+        </components.Option>
+    );
+};
+
+const IconValue = (props: any) => {
+    const fallbackImg = 'images/jira-icon.svg';
+    const avatarUrl = getFaviconUrl(props.data) || fallbackImg;
+
+    return (
+        <components.SingleValue {...props}>
+            <div style={{ display: 'flex', alignItems: 'center' }}>
+                <img
+                    src={avatarUrl}
+                    width="16"
+                    height="16"
+                    alt={props.data?.name || 'Avatar'}
+                    onError={(e) => {
+                        if (e.currentTarget.src !== fallbackImg) {
+                            e.currentTarget.src = fallbackImg;
+                        }
+                    }}
+                />
+                <span style={{ marginLeft: '10px' }}>{props.data?.name}</span>
+            </div>
+        </components.SingleValue>
+    );
+};
 
 export default class CreateIssuePage extends AbstractIssueEditorPage<Emit, Accept, {}, ViewState> {
     private advancedFields: FieldUI[] = [];
     private commonFields: FieldUI[] = [];
     private attachingInProgress = false;
+    private initialFieldValues: FieldValues = {};
+    private suggestionFallbackTimer: NodeJS.Timeout | null = null;
+    private formRef = React.createRef<HTMLFormElement>();
 
     getProjectKey(): string {
         return this.state.fieldValues['project'].key;
+    }
+
+    protected override getApiVersion(): string {
+        return String(this.state.apiVersion);
     }
 
     constructor(props: any) {
@@ -75,19 +127,71 @@ export default class CreateIssuePage extends AbstractIssueEditorPage<Emit, Accep
         this.state = emptyState;
     }
 
-    onMessageReceived(e: any): boolean {
+    override onMessageReceived(e: any): boolean {
         let handled = super.onMessageReceived(e);
 
         if (!handled) {
             switch (e.type) {
+                case 'setGeneratingIssueSuggestions': {
+                    handled = true;
+
+                    if (this.suggestionFallbackTimer) {
+                        clearTimeout(this.suggestionFallbackTimer);
+                        this.suggestionFallbackTimer = null;
+                    }
+
+                    if (e.isGeneratingIssueSuggestions) {
+                        // Set a fallback timer to reset isGeneratingSuggestions after 5 seconds in case something goes wrong
+                        this.suggestionFallbackTimer = setTimeout(() => {
+                            if (this.state.isGeneratingSuggestions) {
+                                this.setState({ isGeneratingSuggestions: false });
+                            }
+                            this.suggestionFallbackTimer = null;
+                        }, fallbackTimerDuration);
+                    }
+
+                    this.setState({
+                        isGeneratingSuggestions: e.isGeneratingIssueSuggestions,
+                    });
+                    break;
+                }
                 case 'update': {
                     handled = true;
                     const issueData = e as CreateIssueData;
-                    this.updateInternals(issueData);
-                    this.setState(issueData, () => {
+                    const { fieldValues } = issueData;
+
+                    if (fieldValues) {
+                        const isInitialFieldsEmpty = Object.keys(this.initialFieldValues).length === 0;
+                        const hasIncomingFields = Object.keys(fieldValues).length > 0;
+
+                        if (isInitialFieldsEmpty && hasIncomingFields) {
+                            this.initialFieldValues = { ...fieldValues };
+                        }
+
+                        if (!isInitialFieldsEmpty) {
+                            Object.keys(this.initialFieldValues).forEach((key) => {
+                                if (key in fieldValues) {
+                                    this.initialFieldValues[key] = fieldValues[key];
+                                }
+                            });
+                        }
+                    }
+
+                    // Merge new field values over existing to avoid losing values
+                    const mergedFieldValues = fieldValues
+                        ? { ...this.state.fieldValues, ...fieldValues }
+                        : this.state.fieldValues;
+                    const mergedIssueData: CreateIssueData = {
+                        ...issueData,
+                        fieldValues: mergedFieldValues,
+                    };
+
+                    this.updateInternals(mergedIssueData);
+                    this.setState(mergedIssueData, () => {
                         this.setState({
                             isSomethingLoading: false,
                             loadingField: '',
+                            summaryKey: v4(), // reset summary to clear validation errors
                         });
                     });
 
@@ -106,14 +210,44 @@ export default class CreateIssuePage extends AbstractIssueEditorPage<Emit, Accep
                             errorDetails: undefined,
                             isSomethingLoading: false,
                             loadingField: '',
-                            isCreateBannerOpen: true,
                             createdIssue: e.issueData,
-                            fieldValues: {
-                                ...this.state.fieldValues,
-                                ...{ description: '', summary: '' },
-                            },
+                            fieldValues: this.initialFieldValues,
+                            formKey: v4(),
+                        });
+                        // Refresh sidebar tree views after successful issue creation
+                        this.postMessage({
+                            action: 'refreshTreeViews',
                         });
                     }
+                    break;
+                }
+                case 'projectsLoaded': {
+                    handled = true;
+                    const { projects, total, hasMore } = e;
+                    const currentProjects = this.state.selectFieldOptions['project'] || [];
+                    const newProjects = [...currentProjects, ...projects];
+
+                    this.setState({
+                        selectFieldOptions: {
+                            ...this.state.selectFieldOptions,
+                            project: newProjects,
+                        },
+                        projectPagination: {
+                            total,
+                            hasMore,
+                            loaded: newProjects.length,
+                            isLoadingMore: false,
+                        },
+                    });
+                    break;
+                }
+                case 'createIssueWithAction': {
+                    handled = true;
+
+                    this.setState({ onCreateAction: e.action }, () => {
+                        this.formRef.current?.requestSubmit();
+                        this.setState({ onCreateAction: 'createAndView' });
+                    });
                     break;
                 }
             }
@@ -138,6 +272,10 @@ export default class CreateIssuePage extends AbstractIssueEditorPage<Emit, Accep
     }
 
     handleSubmit = async (e: any) => {
+        if (this.state.isLoggedOut) {
+            return { _form: 'You have been logged out. Please close this tab and log in again.' };
+        }
+
         const requiredFields = Object.values(this.state.fields).filter((field) => field.required);
 
         const errs: Record<string, string> = {};
@@ -172,26 +310,52 @@ export default class CreateIssuePage extends AbstractIssueEditorPage<Emit, Accep
             return errs;
         }
 
+        // Convert WikiMarkup fields to ADF if using legacy editor
+        const issueData = { ...this.state.fieldValues };
+        if (!this.state.showAtlaskitEditor) {
+            // Convert description if it's a string (WikiMarkup)
+            if (issueData.description && typeof issueData.description === 'string') {
+                issueData.description = convertWikimarkupToAdf(issueData.description);
+            }
+            // Convert comment if it's a string (WikiMarkup)
+            if (issueData.comment && typeof issueData.comment === 'string') {
+                issueData.comment = convertWikimarkupToAdf(issueData.comment);
+            }
+        }
+
+        const createAction = {
+            action: 'createIssue',
+            site: this.state.siteDetails,
+            issueData: issueData,
+            onCreateAction: this.state.onCreateAction,
+        };
+
         this.setState({
             isSomethingLoading: true,
             loadingField: 'submitButton',
-            isCreateBannerOpen: false,
+            lastFailedAction: createAction,
         });
-        this.postMessage({
-            action: 'createIssue',
-            site: this.state.siteDetails,
-            issueData: this.state.fieldValues,
-        });
+
+        this.postMessage(createAction);
 
         return undefined;
     };
 
     handleSiteChange = (site: DetailedSiteInfo) => {
-        this.setState({ siteDetails: site, loadingField: 'site', isSomethingLoading: true });
-        this.postMessage({
+        const action = {
             action: 'getScreensForSite',
             site: site,
+        };
+
+        this.setState({
+            siteDetails: site,
+            loadingField: 'site',
+            isSomethingLoading: true,
+            lastFailedAction: action,
         });
+
+        this.postMessage(action);
+        this.postMessage({ action: 'fetchMediaToken' });
     };
 
     protected handleInlineAttachments = async (fieldkey: string, newValue: any) => {
@@ -221,7 +385,7 @@ export default class CreateIssuePage extends AbstractIssueEditorPage<Emit, Accep
         }
     };
 
-    protected handleInlineEdit = async (field: FieldUI, newValue: any) => {
+    protected override handleInlineEdit = async (field: FieldUI, newValue: any) => {
         let typedVal = newValue;
         let fieldkey = field.key;
 
@@ -257,61 +421,111 @@ export default class CreateIssuePage extends AbstractIssueEditorPage<Emit, Accep
         this.setState({ fieldValues: { ...this.state.fieldValues, ...{ [fieldkey]: typedVal } } });
 
         if (field.valueType === ValueType.Project) {
-            this.setState({ loadingField: field.key, isSomethingLoading: true });
-            this.postMessage({
+            const action = {
                 action: 'getScreensForProject',
                 project: newValue,
                 fieldValues: this.state.fieldValues,
+            };
+            this.setState({
+                loadingField: field.key,
+                isSomethingLoading: true,
+                lastFailedAction: action,
             });
-        }
-
-        if (field.valueType === ValueType.IssueType) {
-            this.setState({ loadingField: field.key, isSomethingLoading: true });
-            this.postMessage({
+            this.postMessage(action);
+        } else if (field.valueType === ValueType.IssueType) {
+            const action = {
                 action: 'setIssueType',
                 issueType: newValue,
                 fieldValues: this.state.fieldValues,
+            };
+            this.setState({
+                loadingField: field.key,
+                isSomethingLoading: true,
+                lastFailedAction: action,
             });
+            this.postMessage(action);
+        } else {
+            this.setState({ isSomethingLoading: false, loadingField: '' });
         }
     };
 
-    fetchUsers = (input: string) => {
-        return this.loadSelectOptions(
-            input,
-            `${this.state.siteDetails.baseApiUrl}/api/${this.state.apiVersion}/user/search?${
-                this.state.siteDetails.isCloud ? 'query' : 'username'
-            }=`,
-        );
-    };
+    fetchAndTransformUsers = async (input: string, accountId?: string) =>
+        (await this.fetchUsers(input, accountId)).map((user) => ({
+            displayName: user.displayName,
+            avatarUrl: user.avatarUrls?.['48x48'],
+            mention: this.state.siteDetails.isCloud ? `[~accountid:${user.accountId}]` : `[~${user.name}]`,
+            accountId: user.accountId,
+        }));
 
-    getCommonFieldMarkup(): any {
-        return this.commonFields.map((field) => this.getInputMarkup(field));
+    private getFieldError(fieldKey: string): string | undefined {
+        if (fieldKey === 'project' && this.state?.selectFieldOptions?.project?.length === 0) {
+            return "You don't have write access to any projects on the selected Jira site";
+        }
+        return;
+    }
+
+    getCommonFieldMarkup(): React.ReactElement[] {
+        return this.commonFields.map((field, index) => {
+            const errorMessage = this.getFieldError(field.key);
+            if (errorMessage) {
+                return (
+                    <div key={index}>
+                        {this.getInputMarkup(field)}
+                        <ErrorMessage>{errorMessage}</ErrorMessage>
+                    </div>
+                );
+            }
+            return <div key={index}>{this.getInputMarkup(field)}</div>;
+        });
     }
 
     getAdvancedFieldMarkup(): any {
-        return this.advancedFields
-            .filter((field) => field.key !== 'parent') //TODO: add parent functionality
-            .map((field) => this.getInputMarkup(field));
+        // Cloud supports parent-child relation only for all issues. DC supports parent-child for standard-issues and subtasks
+        if (this.state.siteDetails.isCloud) {
+            return this.advancedFields.map((field) =>
+                this.getInputMarkup(field, false, this.state.fieldValues['issuetype']),
+            );
+        } else {
+            return this.advancedFields
+                .filter((field) => field.key !== 'parent') //
+                .map((field) => this.getInputMarkup(field));
+        }
     }
 
     formHeader = () => {
         return (
             <div>
                 Create work item
-                {this.state.isSomethingLoading && (
-                    <div className="spinner" style={{ marginLeft: '15px' }}>
-                        <Spinner size="medium" />
-                    </div>
-                )}
+                {this.state.isSomethingLoading ||
+                    (this.state.isGeneratingSuggestions && (
+                        <div
+                            className="spinner"
+                            style={{
+                                position: 'absolute',
+                                top: 0,
+                                right: 0,
+                                margin: '10px 15px 0 0',
+                                zIndex: 1,
+                            }}
+                        >
+                            <Spinner size="medium" />
+                        </div>
+                    ))}
             </div>
         );
     };
 
-    public render() {
+    override componentDidMount() {
+        this.postMessage({ action: 'getFeatureFlags' });
+        this.postMessage({ action: 'fetchMediaToken' });
+    }
+
+    public override render() {
         if (!this.state.fieldValues['issuetype']?.id && !this.state.isErrorBannerOpen && this.state.isOnline) {
             this.postMessage({ action: 'refresh' });
             return <AtlLoader />;
         }
+
         return (
             <Page>
                 <AtlascodeErrorBoundary
@@ -340,52 +554,38 @@ export default class CreateIssuePage extends AbstractIssueEditorPage<Emit, Accep
                                         onPMFSubmit={(data: LegacyPMFData) => this.onPMFSubmit(data)}
                                     />
                                 )}
-                                {this.state.isCreateBannerOpen && (
-                                    <div className="fade-in">
-                                        <SectionMessage appearance="success" title="Issue Created">
-                                            <p>
-                                                Issue{' '}
-                                                <Button
-                                                    className="ac-banner-link-button"
-                                                    appearance="link"
-                                                    spacing="none"
-                                                    onClick={() => {
-                                                        this.handleOpenIssue(this.state.createdIssue);
-                                                    }}
-                                                >
-                                                    {this.state.createdIssue.key}
-                                                </Button>{' '}
-                                                has been created.
-                                            </p>
-                                        </SectionMessage>
-                                    </div>
-                                )}
                                 {this.state.isErrorBannerOpen && (
                                     <ErrorBanner
-                                        onDismissError={this.handleDismissError}
+                                        onRetry={this.handleRetryLastAction}
+                                        onSignIn={this.handleSignIn}
                                         errorDetails={this.state.errorDetails}
                                     />
                                 )}
-                                <Form name="create-issue" onSubmit={this.handleSubmit}>
+                                {this.state.showEditorMissedScopeBanner && (
+                                    <MissingScopesBanner
+                                        onDismiss={() => {
+                                            this.setState({ showEditorMissedScopeBanner: false });
+                                        }}
+                                        onOpen={() => {
+                                            this.postMessage({ action: 'openJiraAuth' });
+                                        }}
+                                    />
+                                )}
+                                <Form name="create-issue" key={this.state.formKey} onSubmit={this.handleSubmit}>
                                     {(frmArgs: any) => {
                                         return (
-                                            <form {...frmArgs.formProps}>
+                                            <form {...frmArgs.formProps} ref={this.formRef}>
                                                 <FormHeader title={this.formHeader()}>
                                                     <p>
                                                         Required fields are marked with an asterisk <RequiredAsterisk />
                                                     </p>
                                                 </FormHeader>
-                                                <Field
-                                                    label={<span>Site</span>}
-                                                    id="site"
-                                                    name="site"
-                                                    isRequired
-                                                    defaultValue={this.state.siteDetails}
-                                                >
+                                                <Field label={<span>Site</span>} id="site" name="site" isRequired>
                                                     {(fieldArgs: any) => {
                                                         return (
                                                             <Select
                                                                 {...fieldArgs.fieldProps}
+                                                                value={this.state.siteDetails}
                                                                 className="ac-form-select-container"
                                                                 classNamePrefix="ac-form-select"
                                                                 getOptionLabel={(option: any) => option.name}
@@ -412,15 +612,20 @@ export default class CreateIssuePage extends AbstractIssueEditorPage<Emit, Accep
                                                     </Panel>
                                                 )}
                                                 <FormFooter actions={{}}>
-                                                    <LoadingButton
+                                                    <CreateIssueButton
                                                         type="submit"
-                                                        spacing="compact"
+                                                        name="Create"
                                                         className="ac-button"
-                                                        isDisabled={this.state.isSomethingLoading}
-                                                        isLoading={this.state.loadingField === 'submitButton'}
+                                                        disabled={
+                                                            this.state.isSomethingLoading || this.state.isLoggedOut
+                                                        }
+                                                        isLoading={
+                                                            this.state.isSomethingLoading &&
+                                                            this.state.loadingField === 'submitButton'
+                                                        }
                                                     >
                                                         Create
-                                                    </LoadingButton>
+                                                    </CreateIssueButton>
                                                 </FormFooter>
                                             </form>
                                         );

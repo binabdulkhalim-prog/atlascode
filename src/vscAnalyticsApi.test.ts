@@ -99,25 +99,37 @@ describe('VSCAnalyticsApi', () => {
 
         it('should fire launched event', async () => {
             const location = 'test-location';
+            const ideUriScheme = 'vscode';
             const numJiraCloudAuthed = 1;
             const numJiraDcAuthed = 2;
             const numBitbucketCloudAuthed = 3;
             const numBitbucketDcAuthed = 4;
+            const isJiraEnabled = true;
+            const isBitbucketEnabled = false;
+            const isRovoDevEnabled = true;
 
             await analyticsApi.fireLaunchedEvent(
                 location,
+                ideUriScheme,
                 numJiraCloudAuthed,
                 numJiraDcAuthed,
                 numBitbucketCloudAuthed,
                 numBitbucketDcAuthed,
+                isJiraEnabled,
+                isBitbucketEnabled,
+                isRovoDevEnabled,
             );
 
             expect(analytics.launchedEvent).toHaveBeenCalledWith(
                 location,
+                ideUriScheme,
                 numJiraCloudAuthed,
                 numJiraDcAuthed,
                 numBitbucketCloudAuthed,
                 numBitbucketDcAuthed,
+                isJiraEnabled,
+                isBitbucketEnabled,
+                isRovoDevEnabled,
             );
             expect(mockAnalyticsClient.sendTrackEvent).toHaveBeenCalled();
         });
@@ -266,6 +278,7 @@ describe('VSCAnalyticsApi', () => {
                 errorName: 'TestError',
                 errorMessage: 'Test error message',
                 errorCause: 'Test error cause',
+                userDomain: 'unknown',
             };
 
             await analyticsApi.fireUIErrorEvent(errorInfo);
@@ -301,7 +314,7 @@ describe('VSCAnalyticsApi', () => {
         });
 
         it('should fire start issue creation event', async () => {
-            const source = 'test-source';
+            const source = 'contextMenu';
             const product: Product = { key: 'jira', name: 'Jira' };
 
             await analyticsApi.fireStartIssueCreationEvent(source, product);
@@ -463,7 +476,6 @@ describe('VSCAnalyticsApi', () => {
             expect(analytics.openSettingsButtonEvent).toHaveBeenCalledWith(source);
             expect(mockAnalyticsClient.sendUIEvent).toHaveBeenCalled();
         });
-
         it('should fire explore features button event', async () => {
             const source = 'test-source';
             await analyticsApi.fireExploreFeaturesButtonEvent(source);

@@ -19,6 +19,11 @@ export const baseConfigFor = (project: string, testExtension: string): Config =>
     moduleNameMapper: {
         '^src(.*)$': '<rootDir>/src$1',
         '^testsutil(/.+)?': '<rootDir>/testsutil$1',
+        'monaco-editor': '<rootDir>/__mocks__/monaco-editor.ts',
+        'package.json': '<rootDir>/__mocks__/packagejson.ts',
+        '^clipboard-polyfill': '<rootDir>/node_modules/@atlaskit/editor-common/dist/cjs/clipboard/index.js',
+        'prosemirror-model': '<rootDir>/node_modules/prosemirror-model', // alias to fix duplicate module issue
+        'prosemirror-view': '<rootDir>/node_modules/prosemirror-view', // alias to fix duplicate module issue
     },
 
     testMatch: [`**/*.test.${testExtension}`],
@@ -44,6 +49,7 @@ export const baseConfigFor = (project: string, testExtension: string): Config =>
         'merge-anything',
         'is-what/',
         'axios-curlirize/',
+        'clipboard-polyfill/',
     ),
 
     collectCoverage: true,
@@ -59,16 +65,16 @@ export const baseConfigFor = (project: string, testExtension: string): Config =>
         global:
             testExtension === 'ts'
                 ? {
-                      statements: 40,
-                      branches: 27,
-                      functions: 34,
-                      lines: 40,
+                      statements: 65,
+                      branches: 54,
+                      functions: 59,
+                      lines: 65,
                   }
                 : /* tsx */ {
-                      statements: 7,
-                      branches: 5,
-                      functions: 5,
-                      lines: 7,
+                      statements: 14,
+                      branches: 10,
+                      functions: 10,
+                      lines: 14,
                   },
     },
 });

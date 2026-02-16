@@ -25,6 +25,18 @@ export interface TreeViewIssue extends MinimalIssue<DetailedSiteInfo> {
 export async function executeJqlQuery(jqlEntry: JQLEntry): Promise<TreeViewIssue[]> {
     try {
         if (jqlEntry) {
+            const trimmedQuery = jqlEntry.query.trim();
+            const hasOperator = /(=|!=|<|>|<=|>=|~|!~|\b(IN|NOT\s+IN|IS|IS\s+NOT|AND|OR)\b)/i.test(trimmedQuery);
+            if (!hasOperator) {
+                Logger.warn(
+                    'Skipping JQL query execution: query appears incomplete (no operators found)',
+                    jqlEntry.siteId,
+                    jqlEntry.id,
+                    trimmedQuery,
+                );
+                return [];
+            }
+
             const jqlSite = Container.siteManager.getSiteForId(ProductJira, jqlEntry.siteId);
             if (jqlSite) {
                 const issues = (await issuesForJQL(jqlEntry.query, jqlSite)) as TreeViewIssue[];
@@ -49,9 +61,8 @@ export function getJiraIssueUri(issue: MinimalIssue<DetailedSiteInfo>): Uri {
 }
 
 export const loginToJiraMessageNode = createLabelItem('Please login to Jira', {
-    command: Commands.ShowConfigPage,
+    command: Commands.JiraLogin,
     title: 'Login to Jira',
-    arguments: [ProductJira],
 });
 
 export class JiraIssueNode extends TreeItem implements AbstractBaseNode {

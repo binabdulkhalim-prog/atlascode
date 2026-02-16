@@ -10,6 +10,7 @@ import {
     WebviewPanel,
     WebviewPanelOnDidChangeViewStateEvent,
     window,
+    WindowState,
 } from 'vscode';
 
 import { pmfClosed, pmfSnoozed, pmfSubmitted, viewScreenEvent } from '../analytics';
@@ -18,18 +19,23 @@ import { Container } from '../container';
 import { submitLegacyJSDPMF } from '../feedback/pmfJSDSubmitter';
 import { isAction, isAlertable, isPMFSubmitAction } from '../ipc/messaging';
 import { CommonActionType } from '../lib/ipc/fromUI/common';
-import { CommonMessageType } from '../lib/ipc/toUI/common';
+import { AdditionalSettings, CommonMessageType } from '../lib/ipc/toUI/common';
 import { iconSet, Resources } from '../resources';
-import { Experiments, FeatureFlagClient, Features } from '../util/featureFlags';
-import { ExperimentGateValues, FeatureGateValues } from '../util/featureFlags/features';
+import { Experiments, Features } from '../util/featureFlags';
+import { ExperimentGateValues, FeatureGateValues } from '../util/features';
 import { UIWebsocket } from '../ws';
 
+export type ContextMenuCommandData = {
+    action: string;
+    data: Record<string, string | boolean>;
+};
 // ReactWebview is an interface that can be used to deal with webview objects when you don't know their generic typings.
 export interface ReactWebview extends Disposable {
     hide(): void;
     createOrShow(): Promise<void>;
     onDidPanelDispose(): Event<void>;
     invalidate(): void;
+    handleContextMenuCommand?({ action, data }: ContextMenuCommandData): void;
 }
 
 // InitializingWebview is an interface that exposes an initialize method that may be called to initialize the veiw object with data.
@@ -57,6 +63,8 @@ export abstract class AbstractReactWebview implements ReactWebview {
     private _onDidPanelDispose = new vscode.EventEmitter<void>();
     protected isRefeshing: boolean = false;
     private _viewEventSent: boolean = false;
+    private _authChangeListener: Disposable | undefined;
+    private _siteChangeListener: Disposable | undefined;
     private ws: UIWebsocket;
 
     constructor(extensionPath: string) {
@@ -119,6 +127,7 @@ export abstract class AbstractReactWebview implements ReactWebview {
                 this._panel,
                 this._panel.onDidDispose(this.onPanelDisposed, this),
                 this._panel.onDidChangeViewState(this.onViewStateChanged, this),
+                window.onDidChangeWindowState(this.onWindowReceiveFocus, this),
                 this._panel.webview.onDidReceiveMessage(this.onMessageReceived, this),
                 this.ws,
             );
@@ -137,14 +146,30 @@ export abstract class AbstractReactWebview implements ReactWebview {
             this._panel.reveal(column ? column : ViewColumn.Active); // , false);
         }
 
-        this.fireFeatureGates([Features.JiraRichText]);
+        // The webview might not be ready at this point; see getFeatureFlags usage in `onMessageReceived`
+        this.fireFeatureGates([Features.AtlaskitEditor]);
         this.fireExperimentGates([]);
+        this.fireAdditionalSettings({
+            rovoDevEnabled: Container.isRovoDevEnabled,
+        });
+
+        // When anything changes around site availability or auth - we need to handle it
+        this._authChangeListener = Container.credentialManager.onDidAuthChange(() => {
+            this.onAuthChange();
+        }, this);
+        this._siteChangeListener = Container.siteManager.onDidSitesAvailableChange(() => {
+            this.onAuthChange();
+        }, this);
+    }
+
+    protected onAuthChange(): Promise<void> | void {
+        // Override in subclass if needed
     }
 
     private fireFeatureGates(features: Features[]) {
         if (features.length) {
             const featureFlags = {} as FeatureGateValues;
-            features.forEach((x) => (featureFlags[x] = FeatureFlagClient.checkGate(x)));
+            features.forEach((x) => (featureFlags[x] = Container.featureFlagClient.checkGate(x)));
             this.postMessage({ type: CommonMessageType.UpdateFeatureFlags, featureFlags });
         }
     }
@@ -152,9 +177,13 @@ export abstract class AbstractReactWebview implements ReactWebview {
     private fireExperimentGates(experiments: Experiments[]) {
         if (experiments.length) {
             const experimentValues = {} as ExperimentGateValues;
-            experiments.forEach((x) => (experimentValues[x] = FeatureFlagClient.checkExperimentValue(x)));
+            experiments.forEach((x) => (experimentValues[x] = Container.featureFlagClient.checkExperimentValue(x)));
             this.postMessage({ type: CommonMessageType.UpdateExperimentValues, experimentValues });
         }
+    }
+
+    protected fireAdditionalSettings(settings: AdditionalSettings) {
+        this.postMessage({ type: CommonMessageType.AdditionalSettings, settings });
     }
 
     private onViewStateChanged(e: WebviewPanelOnDidChangeViewStateEvent) {
@@ -177,6 +206,12 @@ export abstract class AbstractReactWebview implements ReactWebview {
                     });
                 }
             });
+        }
+    }
+
+    private onWindowReceiveFocus(windowState: WindowState) {
+        if (windowState.focused && this.visible) {
+            this.invalidate();
         }
     }
 
@@ -218,6 +253,11 @@ export abstract class AbstractReactWebview implements ReactWebview {
                     }
                     Container.pmfStats.touchSurveyed();
                     return true;
+                }
+                case 'getFeatureFlags': {
+                    // Ensures the page is rendered and AbstractIssueEditorPage added listener for FF
+                    this.fireFeatureGates([Features.AtlaskitEditor]);
+                    this.fireExperimentGates([]);
                 }
             }
         }
@@ -268,6 +308,10 @@ export abstract class AbstractReactWebview implements ReactWebview {
         }
         this._panel = undefined;
         this._onDidPanelDispose.fire();
+        this._authChangeListener?.dispose();
+        this._authChangeListener = undefined;
+        this._siteChangeListener?.dispose();
+        this._siteChangeListener = undefined;
     }
 
     public dispose() {

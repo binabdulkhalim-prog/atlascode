@@ -1,27 +1,44 @@
-import { emptyIssueType, IssueType, Project } from '@atlassianlabs/jira-pi-common-models';
+import { emptyIssueType, emptyProject, IssueType, Project } from '@atlassianlabs/jira-pi-common-models';
 import { CreateMetaTransformerResult, FieldValues, IssueTypeUI, ValueType } from '@atlassianlabs/jira-pi-meta-models';
 import { decode } from 'base64-arraybuffer-es6';
 import { format } from 'date-fns';
 import FormData from 'form-data';
-import { commands, Position, Uri, ViewColumn } from 'vscode';
+import { startWorkOnIssue } from 'src/commands/jira/startWorkOnIssue';
+import timer from 'src/util/perf';
+import { commands, ConfigurationTarget, Disposable, Position, Uri, ViewColumn } from 'vscode';
 
-import { issueCreatedEvent } from '../analytics';
+import { issueCreatedEvent, issueOpenRovoDevEvent } from '../analytics';
+import { performanceEvent } from '../analytics';
 import { DetailedSiteInfo, emptySiteInfo, Product, ProductJira } from '../atlclients/authInfo';
-import { configuration } from '../config/configuration';
-import { Commands } from '../constants';
+import { buildSuggestionSettings, IssueSuggestionManager } from '../commands/jira/issueSuggestionManager';
+import { showIssue } from '../commands/jira/showIssue';
+import {
+    configuration,
+    IssueSuggestionContextLevel,
+    IssueSuggestionSettings,
+    SimplifiedTodoIssueData,
+} from '../config/configuration';
+import { Commands, ProjectsPagination } from '../constants';
 import { Container } from '../container';
 import {
     CreateIssueAction,
+    isAiSuggestionFeedback,
     isCreateIssue,
+    isGenerateIssueSuggestions,
+    isLoadMoreProjects,
     isScreensForProjects,
     isScreensForSite,
     isSetIssueType,
+    isUpdateAiSettings,
 } from '../ipc/issueActions';
 import { CreateIssueData } from '../ipc/issueMessaging';
 import { Action } from '../ipc/messaging';
 import { fetchCreateIssueUI } from '../jira/fetchIssue';
 import { WebViewID } from '../lib/ipc/models/common';
 import { Logger } from '../logger';
+import { Features } from '../util/featureFlags';
+import { OnJiraEditedRefreshDelay } from '../util/time';
+import { SearchJiraHelper } from '../views/jira/searchJiraHelper';
 import { AbstractIssueEditorWebview } from './abstractIssueEditorWebview';
 import { InitializingWebview } from './abstractWebview';
 
@@ -51,6 +68,8 @@ const emptyCreateMetaResult: CreateMetaTransformerResult<DetailedSiteInfo> = {
     issueTypes: [],
 };
 
+const CreateJiraIssueRenderEventName = 'ui.jira.createJiraIssue.render.lcp';
+
 export class CreateIssueWebview
     extends AbstractIssueEditorWebview
     implements InitializingWebview<PartialIssue | undefined>
@@ -60,11 +79,20 @@ export class CreateIssueWebview
     private _screenData: CreateMetaTransformerResult<DetailedSiteInfo>;
     private _selectedIssueTypeId: string | undefined;
     private _siteDetails: DetailedSiteInfo;
+    private _projectsWithCreateIssuesPermission: {
+        [siteId: string]: Project[] | { projects: Project[]; total: number; hasMore: boolean };
+    };
+
+    private _issueSuggestionSettings: IssueSuggestionSettings | undefined;
+    private _todoData: SimplifiedTodoIssueData | undefined;
+    private _generatingSuggestions: boolean = false;
+    private _disposables: Disposable[] = [];
 
     constructor(extensionPath: string) {
         super(extensionPath);
         this._screenData = emptyCreateMetaResult;
         this._siteDetails = emptySiteInfo;
+        this._projectsWithCreateIssuesPermission = {};
     }
 
     public get title(): string {
@@ -82,7 +110,7 @@ export class CreateIssueWebview
         return ProductJira;
     }
 
-    protected onPanelDisposed() {
+    protected override onPanelDisposed() {
         this.reset();
         super.onPanelDisposed();
     }
@@ -90,12 +118,80 @@ export class CreateIssueWebview
     private reset() {
         this._screenData = emptyCreateMetaResult;
         this._siteDetails = emptySiteInfo;
+        this._disposables.forEach((d) => d.dispose());
+        this._disposables = [];
     }
 
-    async createOrShow(column?: ViewColumn, data?: PartialIssue): Promise<void> {
+    override async createOrShow(
+        column?: ViewColumn,
+        data?: PartialIssue,
+        issueSuggestionSettings?: IssueSuggestionSettings,
+        todoData?: SimplifiedTodoIssueData,
+    ): Promise<void> {
+        this._issueSuggestionSettings = issueSuggestionSettings;
+        this._todoData = todoData;
         await super.createOrShow(column);
+        await this.initialize(data);
+    }
 
-        this.initialize(data);
+    override async onAuthChange() {
+        super.onAuthChange();
+
+        const originallyAvailable = this._issueSuggestionSettings?.isAvailable;
+        const originallyEnabled = this._issueSuggestionSettings?.isEnabled;
+
+        this._issueSuggestionSettings = await buildSuggestionSettings();
+
+        await this.postMessage({
+            type: 'updateAiSettings',
+            newState: this._issueSuggestionSettings,
+            todoData: this._todoData,
+        });
+
+        if (!this._issueSuggestionSettings.isAvailable || !this._issueSuggestionSettings.isEnabled || !this._todoData) {
+            return;
+        }
+
+        if (!originallyAvailable && originallyEnabled && !this._generatingSuggestions) {
+            // Generate suggestions if the auth change made suggestions available
+            try {
+                const mgr = new IssueSuggestionManager(this._issueSuggestionSettings);
+                await this.setGeneratingIssueSuggestions(true);
+                await mgr.generate(this._todoData).then(async (suggestion) => {
+                    await this.fastUpdateFields({
+                        summary: suggestion.summary,
+                        description: suggestion.description,
+                    });
+                });
+            } finally {
+                await this.setGeneratingIssueSuggestions(false);
+            }
+        }
+    }
+
+    async updateSuggestionData(data: { suggestions?: IssueSuggestionSettings; todoData?: SimplifiedTodoIssueData }) {
+        const suggestionSettings = data?.suggestions || {
+            isAvailable: false,
+            isEnabled: false,
+            level: IssueSuggestionContextLevel.CodeContext,
+        };
+
+        await this.postMessage({
+            type: 'updateAiSettings',
+            newState: suggestionSettings,
+            todoData: data?.todoData,
+        });
+    }
+
+    async initializeActions() {
+        this._disposables.push(
+            commands.registerCommand('atlascode.jira.createIssue.startWork', async () => {
+                await this.postMessage({ type: 'createIssueWithAction', action: 'createAndStartWork' });
+            }),
+            commands.registerCommand('atlascode.jira.createIssue.generateCode', async () => {
+                await this.postMessage({ type: 'createIssueWithAction', action: 'createAndGenerateCode' });
+            }),
+        );
     }
 
     async initialize(data?: PartialIssue) {
@@ -109,14 +205,63 @@ export class CreateIssueWebview
             this._partialIssue = {};
         }
 
-        this.invalidate();
+        await this.invalidate();
+
+        await this.initializeActions();
+
+        await this.updateSuggestionData({
+            suggestions: this._issueSuggestionSettings,
+            todoData: this._todoData,
+        });
+    }
+
+    private getSiteWithMaxIssues(): DetailedSiteInfo | undefined {
+        const availableSites = Container.siteManager.getSitesAvailable(ProductJira);
+        const { siteWithMaxIssues } = availableSites.reduce(
+            (prev: { numIssues: number; siteWithMaxIssues: DetailedSiteInfo | null }, curr) => {
+                const siteIssues = SearchJiraHelper.getAssignedIssuesPerSite(curr.id);
+                if (siteIssues && siteIssues.length > 0 && siteIssues.length > prev.numIssues) {
+                    prev.numIssues = siteIssues.length;
+                    prev.siteWithMaxIssues = curr;
+                }
+                return prev;
+            },
+            { numIssues: 0, siteWithMaxIssues: null },
+        );
+        if (siteWithMaxIssues) {
+            return siteWithMaxIssues;
+        }
+        return undefined;
+    }
+
+    private getProjectKeyWithMaxIssues(siteId: string): string | undefined {
+        const siteIssues = SearchJiraHelper.getAssignedIssuesPerSite(siteId);
+        if (siteIssues && siteIssues.length > 0) {
+            const issuesNumberPerProjectKey = siteIssues.reduce((prev: Record<string, number>, issue) => {
+                const projectKey = issue.key?.split('-')[0];
+                if (!prev[projectKey]) {
+                    prev[projectKey] = 1;
+                    return prev;
+                }
+                prev[projectKey]++;
+                return prev;
+            }, {});
+            const projectKeyWithMaxIssues = Object.keys(issuesNumberPerProjectKey).reduce(
+                (prev: string, curr: string) =>
+                    issuesNumberPerProjectKey[curr] > issuesNumberPerProjectKey[prev] ? curr : prev,
+            );
+            if (projectKeyWithMaxIssues) {
+                return projectKeyWithMaxIssues;
+            }
+        }
+        return undefined;
     }
 
     private async updateSiteAndProject(inputSite?: DetailedSiteInfo, inputProject?: Project) {
         if (inputSite) {
             this._siteDetails = inputSite;
         } else {
-            let siteId = Container.config.jira.lastCreateSiteAndProject.siteId;
+            let siteId = Container.config.jira.lastCreatePreSelectedValues.siteId;
             if (!siteId) {
                 siteId = '';
             }
@@ -124,7 +269,12 @@ export class CreateIssueWebview
             if (configSite) {
                 this._siteDetails = configSite;
             } else {
-                this._siteDetails = Container.siteManager.getFirstSite(ProductJira.key);
+                const siteWithMaxIssues = this.getSiteWithMaxIssues();
+                if (siteWithMaxIssues) {
+                    this._siteDetails = siteWithMaxIssues;
+                } else {
+                    this._siteDetails = Container.siteManager.getFirstSite(ProductJira.key);
+                }
             }
         }
 
@@ -133,7 +283,7 @@ export class CreateIssueWebview
         } else if (inputProject) {
             this._currentProject = inputProject;
         } else {
-            let projectKey = Container.config.jira.lastCreateSiteAndProject.projectKey;
+            let projectKey = Container.config.jira.lastCreatePreSelectedValues.projectKey;
             if (!projectKey) {
                 projectKey = '';
             }
@@ -141,19 +291,77 @@ export class CreateIssueWebview
             if (configProject) {
                 this._currentProject = configProject;
             } else {
-                this._currentProject = await Container.jiraProjectManager.getFirstProject(this._siteDetails);
+                const projectKeyWithMaxIssues = this.getProjectKeyWithMaxIssues(this._siteDetails.id);
+                if (projectKeyWithMaxIssues) {
+                    this._currentProject = await Container.jiraProjectManager.getProjectForKey(
+                        this._siteDetails,
+                        projectKeyWithMaxIssues,
+                    );
+                } else {
+                    this._currentProject = await Container.jiraProjectManager.getFirstProject(this._siteDetails);
+                }
             }
         }
 
         await configuration.setLastCreateSiteAndProject({
             siteId: this._siteDetails.id,
             projectKey: this._currentProject!.key,
+            issueTypeId: this._selectedIssueTypeId || '',
         });
+
+        if (this._todoData) {
+            this.onAuthChange();
+        }
+    }
+
+    private async getProjectsWithPermission(
+        siteDetails: DetailedSiteInfo,
+        maxResults: number = ProjectsPagination.pageSize,
+        startAt: number = ProjectsPagination.startAt,
+        query?: string,
+    ) {
+        const siteId = siteDetails.id;
+        const cacheKey = JSON.stringify({ siteId, startAt, maxResults, query: query || null });
+
+        if (this._projectsWithCreateIssuesPermission[cacheKey]) {
+            const cached = this._projectsWithCreateIssuesPermission[cacheKey];
+            const projects = Array.isArray(cached) ? cached : cached.projects;
+
+            // if ther are no projects, we should refetch in case permissions have changed
+            if (projects.length > 0) {
+                return cached;
+            }
+        }
+
+        const paginatedResult = await Container.jiraProjectManager.getProjectsPaginated(
+            siteDetails,
+            maxResults,
+            startAt,
+            'key',
+            query,
+            'create', // Filter by CREATE_ISSUES permission on the API side (Cloud only)
+        );
+
+        this._projectsWithCreateIssuesPermission[cacheKey] = paginatedResult;
+        return paginatedResult;
+    }
+
+    private async selectedProjectHasCreatePermission(project: Project): Promise<boolean> {
+        try {
+            return !!(await Container.jiraProjectManager.checkProjectPermission(
+                this._siteDetails,
+                project.key,
+                'CREATE_ISSUES',
+            ));
+        } catch (error) {
+            Logger.error(error, `CREATE_ISSUES permission check failed for project ${project.name}`);
+            return false;
+        }
     }
 
     public async invalidate() {
         await this.updateFields();
-        Container.pmfStats.touchActivity();
+        await Container.pmfStats.touchActivity();
     }
 
     async handleSelectOptionCreated(fieldKey: string, newValue: any, nonce?: string): Promise<void> {
@@ -195,8 +403,45 @@ export class CreateIssueWebview
         // only update if we don't have data.
         // e.g. the user may have started editing.
         if (Object.keys(this._screenData.issueTypeUIs).length < 1) {
-            this.forceUpdateFields();
+            await this.forceUpdateFields();
         }
+    }
+
+    async fastUpdateFields(fieldValues?: FieldValues) {
+        if (!this._siteDetails || !this._currentProject) {
+            return;
+        }
+
+        // wait for isRefreshing to be false, with timeout
+        const timeout = 10000;
+        const startTime = Date.now();
+
+        while (this.isRefeshing) {
+            if (Date.now() - startTime > timeout) {
+                throw new Error('Timeout while waiting for isRefreshing to be false');
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+
+        if (!this._selectedIssueTypeId) {
+            return;
+        }
+
+        this._partialIssue = {
+            ...this._partialIssue,
+            summary: fieldValues?.summary || this._partialIssue?.summary,
+            description: fieldValues?.description || this._partialIssue?.description,
+        };
+
+        const createData: CreateIssueData = this._screenData.issueTypeUIs[this._selectedIssueTypeId] as CreateIssueData;
+        createData.fieldValues = {
+            ...createData.fieldValues,
+            ...fieldValues,
+        };
+        createData.type = 'update';
+        createData.transformerProblems = Container.config.jira.showCreateIssueProblems ? this._screenData.problems : {};
+
+        this.postMessage(createData);
     }
 
     async forceUpdateFields(fieldValues?: FieldValues) {
@@ -207,11 +452,45 @@ export class CreateIssueWebview
         this.isRefeshing = true;
         try {
             const availableSites = Container.siteManager.getSitesAvailable(ProductJira);
-            const availableProjects = await Container.jiraProjectManager.getProjects(this._siteDetails);
+            timer.mark(CreateJiraIssueRenderEventName);
 
+            const [paginatedProjectsResult, screenData] = await Promise.all([
+                this.getProjectsWithPermission(
+                    this._siteDetails,
+                    ProjectsPagination.pageSize,
+                    ProjectsPagination.startAt,
+                ),
+                fetchCreateIssueUI(this._siteDetails, this._currentProject.key),
+            ]);
+
+            const projectsWithCreateIssuesPermission = (
+                paginatedProjectsResult as { projects: Project[]; total: number; hasMore: boolean }
+            ).projects;
+            const currentProjectHasCreatePermission = projectsWithCreateIssuesPermission.find(
+                (project: Project) => project.id === this._currentProject?.id,
+            );
+
+            // if the selected or current project does not have create issues permission, we will select the first project with permission
+            const shouldOverrideProject = fieldValues?.['project']
+                ? !(await this.selectedProjectHasCreatePermission(fieldValues['project']))
+                : !currentProjectHasCreatePermission;
+
+            if (shouldOverrideProject) {
+                this._currentProject =
+                    projectsWithCreateIssuesPermission.length > 0
+                        ? projectsWithCreateIssuesPermission[0]
+                        : emptyProject;
+            }
             this._selectedIssueTypeId = '';
-            this._screenData = await fetchCreateIssueUI(this._siteDetails, this._currentProject.key);
+            this._screenData = screenData;
             this._selectedIssueTypeId = this._screenData.selectedIssueType.id;
+
+            if (this._currentProject) {
+                const savedIssueTypeId = Container.config.jira.lastCreatePreSelectedValues.issueTypeId;
+                if (savedIssueTypeId && this._screenData.issueTypeUIs[savedIssueTypeId]) {
+                    this._selectedIssueTypeId = savedIssueTypeId;
+                }
+            }
 
             if (fieldValues) {
                 const overrides = this.getValuesForExisitngKeys(
@@ -224,19 +503,18 @@ export class CreateIssueWebview
                     ...overrides,
                 };
             }
-
-            this._screenData.issueTypeUIs[this._selectedIssueTypeId].selectFieldOptions['site'] = availableSites;
-
-            this._screenData.issueTypeUIs[this._selectedIssueTypeId].fieldValues['project'] = this._currentProject;
-            this._screenData.issueTypeUIs[this._selectedIssueTypeId].selectFieldOptions['project'] = availableProjects;
+            const issueTypeUI: IssueTypeUI<DetailedSiteInfo> = this._screenData.issueTypeUIs[this._selectedIssueTypeId];
+            issueTypeUI.selectFieldOptions['site'] = availableSites;
+            issueTypeUI.fieldValues['project'] = this._currentProject;
+            issueTypeUI.selectFieldOptions['project'] = projectsWithCreateIssuesPermission;
 
             /*
-            partial issue is used for prepopulating summary and description. 
-            fieldValues get sent when you change the project in the project dropdown so we can preserve any previously set values.
-            e.g. you type some stuff, then you change the project... 
-            at this point the new project may or may not have the same (or some of the same) fields.
-            we fill them in with the previous user values.
-            */
+        partial issue is used for prepopulating summary and description.
+        fieldValues get sent when you change the project in the project dropdown so we can preserve any previously set values.
+        e.g. you type some stuff, then you change the project...
+        at this point the new project may or may not have the same (or some of the same) fields.
+        we fill them in with the previous user values.
+        */
             if (this._partialIssue && !fieldValues) {
                 const currentVals = this._screenData.issueTypeUIs[this._selectedIssueTypeId].fieldValues;
                 const partialvals = {
@@ -259,7 +537,19 @@ export class CreateIssueWebview
                 ? this._screenData.problems
                 : {};
 
+            const paginatedResult = paginatedProjectsResult as { projects: Project[]; total: number; hasMore: boolean };
+            createData.projectPagination = {
+                total: paginatedResult.total,
+                loaded: projectsWithCreateIssuesPermission.length,
+                hasMore: paginatedResult.hasMore,
+                isLoadingMore: false,
+            };
+
             this.postMessage(createData);
+            const createDuration = timer.measureAndClear(CreateJiraIssueRenderEventName);
+            performanceEvent(CreateJiraIssueRenderEventName, createDuration).then((event) => {
+                Container.analyticsClient.sendTrackEvent(event);
+            });
         } catch (e) {
             Logger.error(e, 'error updating issue fields');
             this.postMessage({ type: 'error', reason: this.formatErrorReason(e) });
@@ -279,13 +569,24 @@ export class CreateIssueWebview
             this._screenData.issueTypeUIs[issueType.id],
             this._screenData.issueTypeUIs[this._selectedIssueTypeId!].selectFieldOptions,
         );
+        const currentSiteOptions = this._screenData.issueTypeUIs[this._selectedIssueTypeId!].selectFieldOptions.site;
+
         this._screenData.issueTypeUIs[issueType.id].selectFieldOptions = {
             ...this._screenData.issueTypeUIs[issueType.id].selectFieldOptions,
             ...selectOverrides,
+            ...(currentSiteOptions && { site: currentSiteOptions }),
         };
 
         this._screenData.issueTypeUIs[issueType.id].fieldValues['issuetype'] = issueType;
         this._selectedIssueTypeId = issueType.id;
+
+        if (this._currentProject) {
+            configuration.setLastCreateSiteAndProject({
+                siteId: this._siteDetails.id,
+                projectKey: this._currentProject.key,
+                issueTypeId: issueType.id,
+            });
+        }
 
         const createData: CreateIssueData = this._screenData.issueTypeUIs[this._selectedIssueTypeId] as CreateIssueData;
         createData.type = 'update';
@@ -328,58 +629,115 @@ export class CreateIssueWebview
     }
 
     formatIssueLinks(key: string, linkdata: any): any[] {
+        if (!linkdata || !Array.isArray(linkdata.issue) || !linkdata.type || !linkdata.type.id) {
+            return [];
+        }
         const issuelinks: any[] = [];
-
         linkdata.issue.forEach((link: any) => {
             issuelinks.push({
-                type: {
-                    id: linkdata.type.id,
-                },
+                type: { id: linkdata.type.id },
                 inwardIssue: linkdata.type.type === 'inward' ? { key: link.key } : { key: key },
                 outwardIssue: linkdata.type.type === 'outward' ? { key: link.key } : { key: key },
             });
         });
-
         return issuelinks;
     }
 
+    async setGeneratingIssueSuggestions(status: boolean) {
+        if (this._generatingSuggestions === status) {
+            return;
+        }
+        this._generatingSuggestions = status;
+
+        await this.postMessage({
+            type: 'setGeneratingIssueSuggestions',
+            isGeneratingIssueSuggestions: status,
+        });
+    }
+
     formatCreatePayload(a: CreateIssueAction): [any, any, any, any] {
-        const payload: any = { ...a.issueData };
+        const raw: Record<string, unknown> = { ...a.issueData };
+        const rawAny = raw as Record<string, any>;
         let issuelinks: any = undefined;
         let attachments: any = undefined;
         let worklog: any = undefined;
 
-        if (payload['issuelinks']) {
-            issuelinks = payload['issuelinks'];
-            delete payload['issuelinks'];
+        if (rawAny['issuelinks']) {
+            issuelinks = rawAny['issuelinks'];
+            delete rawAny['issuelinks'];
+            if (
+                !issuelinks ||
+                !Array.isArray(issuelinks.issue) ||
+                issuelinks.issue.length < 1 ||
+                !issuelinks.type ||
+                !issuelinks.type.id
+            ) {
+                issuelinks = undefined;
+            }
         }
 
-        if (payload['attachment']) {
-            attachments = payload['attachment'];
-            delete payload['attachment'];
+        if (rawAny['attachment']) {
+            attachments = rawAny['attachment'];
+            delete rawAny['attachment'];
         }
 
-        if (payload['worklog'] && payload['worklog'].enabled) {
+        if (rawAny['worklog'] && rawAny['worklog'].enabled) {
             worklog = {
                 worklog: [
                     {
                         add: {
-                            ...payload['worklog'],
+                            ...rawAny['worklog'],
                             adjustEstimate: 'new',
-                            started: payload['worklog'].started
-                                ? format(payload['worklog'].started, "yyyy-MM-dd'T'HH:mm:ss.SSSXX")
+                            started: rawAny['worklog'].started
+                                ? format(rawAny['worklog'].started, "yyyy-MM-dd'T'HH:mm:ss.SSSXX")
                                 : undefined,
                         },
                     },
                 ],
             };
-            delete payload['worklog'];
+            delete rawAny['worklog'];
+        } else {
+            delete rawAny['worklog'];
         }
+
+        if (rawAny['customfield_10001']) {
+            // special case for handling the team field from the system
+            rawAny['customfield_10001'] = rawAny['customfield_10001'].value;
+        }
+
+        // Filter out fields that are not present on the current screen and drop empty values
+        const allowedFieldKeys = this._selectedIssueTypeId
+            ? Object.keys(this._screenData.issueTypeUIs[this._selectedIssueTypeId].fields)
+            : Object.keys(rawAny);
+
+        const payload: Record<string, unknown> = {};
+        Object.keys(rawAny).forEach((key) => {
+            if (!allowedFieldKeys.includes(key)) {
+                return;
+            }
+            const value = rawAny[key];
+            if (value === undefined || value === null) {
+                return;
+            }
+            if (typeof value === 'boolean' && value === false) {
+                return;
+            }
+            if (typeof value === 'string' && value.trim().length < 1) {
+                return;
+            }
+            if (Array.isArray(value) && value.length < 1) {
+                return;
+            }
+            if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length < 1) {
+                return;
+            }
+            payload[key] = value;
+        });
 
         return [payload, worklog, issuelinks, attachments];
     }
 
-    protected async onMessageReceived(msg: Action): Promise<boolean> {
+    protected override async onMessageReceived(msg: Action): Promise<boolean> {
         let handled = await super.onMessageReceived(msg);
 
         if (!handled) {
@@ -417,16 +775,57 @@ export class CreateIssueWebview
                     break;
                 }
 
+                case 'loadMoreProjects': {
+                    handled = true;
+                    if (isLoadMoreProjects(msg)) {
+                        try {
+                            const result = await this.getProjectsWithPermission(
+                                this._siteDetails,
+                                msg.maxResults || ProjectsPagination.pageSize,
+                                msg.startAt || ProjectsPagination.startAt,
+                                msg.query,
+                            );
+
+                            const paginatedResult = result as { projects: Project[]; total: number; hasMore: boolean };
+                            this.postMessage({
+                                type: 'projectsLoaded',
+                                projects: paginatedResult.projects,
+                                total: paginatedResult.total,
+                                hasMore: paginatedResult.hasMore,
+                                startAt: msg.startAt || ProjectsPagination.startAt,
+                                nonce: msg.nonce,
+                            });
+                        } catch (error) {
+                            Logger.error(error, 'Failed to load more projects');
+                            this.postMessage({
+                                type: 'error',
+                                reason: this.formatErrorReason(error, 'Failed to load more projects'),
+                                nonce: msg.nonce,
+                            });
+                        }
+                    }
+                    break;
+                }
+
                 //TODO: refactor this
                 case 'createIssue': {
                     handled = true;
                     if (isCreateIssue(msg)) {
                         try {
+                            const [payload, worklog, issuelinks, attachments] = this.formatCreatePayload(msg);
                             await configuration.setLastCreateSiteAndProject({
                                 siteId: this._siteDetails.id,
                                 projectKey: this._currentProject!.key,
+                                issueTypeId: payload.issuetype?.id || this._selectedIssueTypeId,
                             });
-                            const [payload, worklog, issuelinks, attachments] = this.formatCreatePayload(msg);
+
+                            // Handle parent payload
+                            if (this._siteDetails.isCloud && payload.parent) {
+                                payload.parent = {
+                                    id: payload.parent.id.toString(),
+                                    key: payload.parent.key,
+                                };
+                            }
 
                             const client = await Container.clientManager.jiraClient(msg.site);
                             const resp = await client.createIssue({ fields: payload, update: worklog });
@@ -455,8 +854,11 @@ export class CreateIssueWebview
                                 await client.addAttachments(resp.key, formData);
                             }
                             // TODO: [VSCODE-601] add a new analytic event for issue updates
-                            commands.executeCommand(Commands.RefreshAssignedWorkItemsExplorer);
-                            commands.executeCommand(Commands.RefreshCustomJqlExplorer);
+                            commands.executeCommand(
+                                Commands.RefreshAssignedWorkItemsExplorer,
+                                OnJiraEditedRefreshDelay,
+                            );
+                            commands.executeCommand(Commands.RefreshCustomJqlExplorer, OnJiraEditedRefreshDelay);
 
                             this.postMessage({
                                 type: 'issueCreated',
@@ -465,6 +867,26 @@ export class CreateIssueWebview
                             });
 
                             this.fireCallback(resp.key, payload.summary);
+
+                            if (msg.onCreateAction === 'createAndStartWork') {
+                                await startWorkOnIssue({ key: resp.key, siteDetails: msg.site });
+                            } else if (msg.onCreateAction === 'createAndGenerateCode' && Container.isRovoDevEnabled) {
+                                const issueUrl = `${msg.site.baseLinkUrl}/browse/${resp.key}`;
+                                await Container.rovodevWebviewProvider.setPromptTextWithFocus(
+                                    'Work on the attached Jira work item',
+                                    {
+                                        contextType: 'jiraWorkItem',
+                                        name: resp.key,
+                                        url: issueUrl,
+                                    },
+                                );
+
+                                issueOpenRovoDevEvent(msg.site, this.id).then((e) => {
+                                    Container.analyticsClient.sendTrackEvent(e);
+                                });
+                            } else {
+                                await showIssue({ key: resp.key, siteDetails: msg.site });
+                            }
                         } catch (e) {
                             Logger.error(e, 'Error creating issue');
                             this.postMessage({
@@ -476,6 +898,13 @@ export class CreateIssueWebview
                     }
                     break;
                 }
+                case 'refreshTreeViews': {
+                    handled = true;
+                    // Pass delay to allow Jira's indexes to update before refreshing
+                    await commands.executeCommand(Commands.RefreshAssignedWorkItemsExplorer, OnJiraEditedRefreshDelay);
+                    await commands.executeCommand(Commands.RefreshCustomJqlExplorer, OnJiraEditedRefreshDelay);
+                    break;
+                }
                 case 'openProblemReport': {
                     handled = true;
                     Container.createIssueProblemsWebview.createOrShow(
@@ -485,6 +914,83 @@ export class CreateIssueWebview
                     );
                     break;
                 }
+                case 'openJiraAuth': {
+                    handled = true;
+                    await commands.executeCommand(Commands.ShowJiraAuth);
+                    break;
+                }
+                // AI-assisted issue creation
+                case 'updateAiSettings': {
+                    handled = true;
+                    if (isUpdateAiSettings(msg)) {
+                        const newState = msg.newState;
+                        Container.analyticsApi.fireIssueSuggestionSettingsChangeEvent({ ...newState });
+                        // update vscode settings accordingly
+                        await configuration.update(
+                            'issueSuggestion.enabled',
+                            newState.isEnabled,
+                            ConfigurationTarget.Global,
+                        );
+                        await configuration.update(
+                            'issueSuggestion.contextLevel',
+                            newState.level,
+                            ConfigurationTarget.Global,
+                        );
+                    }
+                    break;
+                }
+
+                case 'addApiToken': {
+                    handled = true;
+                    Container.analyticsApi.fireApiTokenNudgeClickedEvent({ source: 'createIssueView' });
+                    commands.executeCommand(Commands.JiraAPITokenLogin);
+                    break;
+                }
+
+                case 'generateIssueSuggestions': {
+                    handled = true;
+                    if (isGenerateIssueSuggestions(msg)) {
+                        const { todoData, suggestionSettings } = msg;
+                        const suggestionManager = new IssueSuggestionManager(suggestionSettings);
+                        try {
+                            await this.setGeneratingIssueSuggestions(true);
+                            const suggestion = await suggestionManager.generate(todoData);
+                            await this.fastUpdateFields({
+                                summary: suggestion.summary,
+                                description: suggestion.description,
+                            });
+                        } finally {
+                            await this.setGeneratingIssueSuggestions(false);
+                        }
+                    }
+                    break;
+                }
+
+                case 'webviewReady': {
+                    handled = true;
+                    const areSuggestionsEnabled = Container.featureFlagClient.checkGate(Features.EnableAiSuggestions);
+                    this.postMessage({
+                        type: 'updateFeatureFlag',
+                        value: areSuggestionsEnabled,
+                    });
+                    await this.updateSuggestionData({
+                        suggestions: this._issueSuggestionSettings,
+                        todoData: this._todoData,
+                    });
+                    break;
+                }
+
+                case 'aiSuggestionFeedback': {
+                    handled = true;
+                    if (isAiSuggestionFeedback(msg)) {
+                        const { isPositive, todoData, feedbackData } = msg;
+
+                        const suggestionManager = new IssueSuggestionManager(this._issueSuggestionSettings!);
+                        suggestionManager.sendFeedback(isPositive, todoData, feedbackData);
+                    }
+                    break;
+                }
+
                 default: {
                     break;
                 }

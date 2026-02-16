@@ -1,4 +1,4 @@
-import { Avatar, Box, CircularProgress, Grid, Tooltip, Typography } from '@material-ui/core';
+import { Avatar, Box, CircularProgress, Grid, Tooltip, Typography } from '@mui/material';
 import React, { useMemo } from 'react';
 
 import { BasicPanel } from '../common/BasicPanel';
@@ -22,7 +22,7 @@ export const PullRequestSidebar: React.FC<PullRequestSidebarProps> = ({ state, c
 
     return (
         <Box margin={2}>
-            <Grid container spacing={1} direction={'column'}>
+            <Grid container spacing={1} direction={'column'} data-testid="pullrequest.sidebar">
                 <Grid item>
                     <Typography variant="h6">
                         <strong>Author</strong>
@@ -109,6 +109,7 @@ export const PullRequestSidebar: React.FC<PullRequestSidebarProps> = ({ state, c
                             tasks={state.tasks}
                             onEdit={controller.editTask}
                             onDelete={controller.deleteTask}
+                            pullRequestState={state.pr.data.state}
                         />
                     </BasicPanel>
                 </Grid>

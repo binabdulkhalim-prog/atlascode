@@ -1,12 +1,12 @@
-import { defaultStateGuard, ReducerAction } from '@atlassianlabs/guipi-core-controller';
 import { Transition } from '@atlassianlabs/jira-pi-common-models';
 import React, { useCallback, useMemo, useReducer } from 'react';
+import { defaultStateGuard, ReducerAction } from 'src/ipc/messaging';
 
 import { WorkspaceRepo } from '../../../bitbucket/model';
 import { CommonActionType } from '../../../lib/ipc/fromUI/common';
 import { StartWorkAction, StartWorkActionType } from '../../../lib/ipc/fromUI/startWork';
 import { KnownLinkID, WebViewID } from '../../../lib/ipc/models/common';
-import { ConfigSection, ConfigSubSection } from '../../../lib/ipc/models/config';
+import { ConfigSection, ConfigSubSection, ConfigV3Section, ConfigV3SubSection } from '../../../lib/ipc/models/config';
 import {
     emptyStartWorkInitMessage,
     StartWorkInitMessage,
@@ -35,7 +35,10 @@ export interface StartWorkControllerApi {
     ) => Promise<{ transistionStatus?: string; branch?: string; upstream?: string }>;
     closePage: () => void;
     openJiraIssue: () => void;
-    openSettings: (section?: ConfigSection, subsection?: ConfigSubSection) => void;
+    openSettings: (
+        section?: ConfigSection | ConfigV3Section,
+        subsection?: ConfigSubSection | ConfigV3SubSection,
+    ) => void;
 }
 
 const emptyApi: StartWorkControllerApi = {
@@ -54,6 +57,8 @@ export const StartWorkControllerContext = React.createContext(emptyApi);
 
 export interface StartWorkState extends StartWorkInitMessage {
     isSomethingLoading: boolean;
+    rovoDevPreference?: boolean;
+    pushBranchPreference: boolean;
 }
 
 const emptyState: StartWorkState = {
@@ -61,16 +66,22 @@ const emptyState: StartWorkState = {
     isSomethingLoading: false,
     customTemplate: '{{prefix}}/{{issueKey}}-{{summary}}',
     customPrefixes: [],
+    rovoDevPreference: false,
+    pushBranchPreference: true,
 };
 
 enum StartWorkUIActionType {
     Init = 'init',
     Loading = 'loading',
+    SetRovoDevPreference = 'setRovoDevPreference',
+    SetPushBranchPreference = 'setPushBranchPreference',
 }
 
 type StartWorkUIAction =
     | ReducerAction<StartWorkUIActionType.Init, { data: StartWorkInitMessage }>
-    | ReducerAction<StartWorkUIActionType.Loading, {}>;
+    | ReducerAction<StartWorkUIActionType.Loading, {}>
+    | ReducerAction<StartWorkUIActionType.SetRovoDevPreference, { enabled: boolean }>
+    | ReducerAction<StartWorkUIActionType.SetPushBranchPreference, { enabled: boolean }>;
 
 function reducer(state: StartWorkState, action: StartWorkUIAction): StartWorkState {
     switch (action.type) {
@@ -88,6 +99,12 @@ function reducer(state: StartWorkState, action: StartWorkUIAction): StartWorkSta
         case StartWorkUIActionType.Loading: {
             return { ...state, ...{ isSomethingLoading: true } };
         }
+        case StartWorkUIActionType.SetRovoDevPreference: {
+            return { ...state, rovoDevPreference: action.enabled };
+        }
+        case StartWorkUIActionType.SetPushBranchPreference: {
+            return { ...state, pushBranchPreference: action.enabled };
+        }
         default:
             return defaultStateGuard(state, action);
     }
@@ -102,6 +119,14 @@ export function useStartWorkController(): [StartWorkState, StartWorkControllerAp
                 dispatch({ type: StartWorkUIActionType.Init, data: message });
                 break;
             }
+            case StartWorkMessageType.RovoDevPreferenceResponse: {
+                dispatch({ type: StartWorkUIActionType.SetRovoDevPreference, enabled: message.enabled });
+                break;
+            }
+            case StartWorkMessageType.PushBranchPreferenceResponse: {
+                dispatch({ type: StartWorkUIActionType.SetPushBranchPreference, enabled: message.enabled });
+                break;
+            }
             default: {
                 // uncomment this if another action is added above
                 // defaultActionGuard(message);
@@ -109,7 +134,7 @@ export function useStartWorkController(): [StartWorkState, StartWorkControllerAp
         }
     }, []);
 
-    const [postMessage, postMessagePromise] = useMessagingApi<StartWorkAction, StartWorkMessage, StartWorkResponse>(
+    const { postMessage, postMessagePromise } = useMessagingApi<StartWorkAction, StartWorkMessage, StartWorkResponse>(
         onMessageHandler,
     );
 
@@ -142,7 +167,7 @@ export function useStartWorkController(): [StartWorkState, StartWorkControllerAp
                             StartWorkMessageType.StartWorkResponse,
                             ConnectionTimeout,
                         );
-                        resolve(response as StartWorkResponseMessage);
+                        resolve(response);
                     } catch (e) {
                         reject(e);
                     }

@@ -17,6 +17,11 @@ jest.mock('../container', () => ({
         jiraSettingsManager: {
             getMinimalIssueFieldIdsForSite: jest.fn(),
             getEpicFieldsForSite: jest.fn(),
+            getIssueLinkTypes: jest.fn(),
+            getIssueCreateMetadata: jest.fn(),
+        },
+        analyticsClient: {
+            sendTrackEvent: jest.fn(),
         },
         config: {
             jira: {
@@ -26,6 +31,10 @@ jest.mock('../container', () => ({
             },
         },
     },
+}));
+
+jest.mock('src/analytics', () => ({
+    jiraIssuePerformanceEvent: jest.fn().mockResolvedValue({}),
 }));
 
 describe('issuesForJQL', () => {
@@ -60,8 +69,10 @@ describe('issuesForJQL', () => {
         // Setup default mock implementations
         mockClient.searchForIssuesUsingJqlGet.mockResolvedValue({});
         (Container.clientManager.jiraClient as jest.Mock).mockResolvedValue(mockClient);
-        (Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite as jest.Mock).mockResolvedValue(mockFields);
+        (Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite as jest.Mock).mockReturnValue(mockFields);
         (Container.jiraSettingsManager.getEpicFieldsForSite as jest.Mock).mockResolvedValue(mockEpicFieldInfo);
+        (Container.jiraSettingsManager.getIssueLinkTypes as jest.Mock).mockResolvedValue([]);
+        (Container.jiraSettingsManager.getIssueCreateMetadata as jest.Mock).mockResolvedValue({});
         (readSearchResults as jest.Mock).mockResolvedValue(mockSearchResult);
     });
 
@@ -71,8 +82,8 @@ describe('issuesForJQL', () => {
 
         // Verify dependencies were called with correct parameters
         expect(Container.clientManager.jiraClient).toHaveBeenCalledWith(mockSite);
-        expect(Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite).toHaveBeenCalledWith(mockSite);
         expect(Container.jiraSettingsManager.getEpicFieldsForSite).toHaveBeenCalledWith(mockSite);
+        expect(Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite).toHaveBeenCalledWith(mockEpicFieldInfo);
         expect(mockClient.searchForIssuesUsingJqlGet).toHaveBeenCalledWith(mockJql, mockFields, MAX_RESULTS, 0);
         expect(readSearchResults).toHaveBeenCalledWith({}, mockSite, mockEpicFieldInfo);
 
@@ -192,5 +203,92 @@ describe('issuesForJQL', () => {
 
         // Execute the function and verify it rejects with the error
         await expect(issuesForJQL(mockJql, mockSite)).rejects.toThrow(errorMessage);
+    });
+
+    it('should handle empty results', async () => {
+        // Setup empty results
+        (readSearchResults as jest.Mock).mockResolvedValue({
+            issues: [],
+            total: 0,
+        });
+
+        // Execute the function
+        const result = await issuesForJQL(mockJql, mockSite);
+
+        // Verify empty array is returned
+        expect(result).toEqual([]);
+    });
+
+    it('should extract unique project keys and cache metadata for multiple projects', async () => {
+        // Setup issues from multiple projects
+        const multiProjectIssues = [
+            forceCastTo<MinimalIssue<DetailedSiteInfo>>({ key: 'PROJ1-123' }),
+            forceCastTo<MinimalIssue<DetailedSiteInfo>>({ key: 'PROJ2-456' }),
+            forceCastTo<MinimalIssue<DetailedSiteInfo>>({ key: 'PROJ1-789' }), // Duplicate project
+            forceCastTo<MinimalIssue<DetailedSiteInfo>>({ key: 'PROJ3-101' }),
+        ];
+
+        (readSearchResults as jest.Mock).mockResolvedValue({
+            issues: multiProjectIssues,
+            total: multiProjectIssues.length,
+        });
+
+        // Execute the function
+        const result = await issuesForJQL(mockJql, mockSite);
+
+        // Verify getIssueCreateMetadata was called for each unique project
+        expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledTimes(3);
+        expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledWith('PROJ1', mockSite);
+        expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledWith('PROJ2', mockSite);
+        expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledWith('PROJ3', mockSite);
+
+        // Verify getIssueLinkTypes was called
+        expect(Container.jiraSettingsManager.getIssueLinkTypes).toHaveBeenCalledWith(mockSite);
+
+        // Verify correct data is returned
+        expect(result).toEqual(multiProjectIssues);
+    });
+
+    it('should handle issues with complex project keys', async () => {
+        // Setup issues with various project key formats
+        const complexKeyIssues = [
+            forceCastTo<MinimalIssue<DetailedSiteInfo>>({ key: 'ABC-123' }),
+            forceCastTo<MinimalIssue<DetailedSiteInfo>>({ key: 'PROJECT_NAME-456' }),
+            forceCastTo<MinimalIssue<DetailedSiteInfo>>({ key: 'X-789' }),
+        ];
+
+        (readSearchResults as jest.Mock).mockResolvedValue({
+            issues: complexKeyIssues,
+            total: complexKeyIssues.length,
+        });
+
+        // Execute the function
+        const result = await issuesForJQL(mockJql, mockSite);
+
+        // Verify getIssueCreateMetadata was called for each unique project
+        expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledWith('ABC', mockSite);
+        expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledWith('PROJECT_NAME', mockSite);
+        expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledWith('X', mockSite);
+
+        // Verify correct data is returned
+        expect(result).toEqual(complexKeyIssues);
+    });
+
+    it('should not call metadata functions when no issues are returned', async () => {
+        // Setup empty results
+        (readSearchResults as jest.Mock).mockResolvedValue({
+            issues: [],
+            total: 0,
+        });
+
+        // Execute the function
+        const result = await issuesForJQL(mockJql, mockSite);
+
+        // Verify metadata functions were not called for empty results
+        expect(Container.jiraSettingsManager.getIssueLinkTypes).not.toHaveBeenCalled();
+        expect(Container.jiraSettingsManager.getIssueCreateMetadata).not.toHaveBeenCalled();
+
+        // Verify empty array is returned
+        expect(result).toEqual([]);
     });
 });

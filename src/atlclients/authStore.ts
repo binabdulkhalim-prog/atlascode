@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import PQueue from 'p-queue';
-import { Disposable, Event, EventEmitter, version, window } from 'vscode';
+import { Disposable, Event, EventEmitter, ExtensionContext, version, window } from 'vscode';
 
 import { loggedOutEvent } from '../analytics';
 import { AnalyticsClient } from '../analytics-node-client/src/client.min.js';
@@ -8,15 +8,19 @@ import { CommandContext, setCommandContext } from '../commandContext';
 import { Container } from '../container';
 import { Logger } from '../logger';
 import { keychain } from '../util/keychain';
+import { Time } from '../util/time';
 import {
     AuthChangeType,
     AuthInfo,
     AuthInfoEvent,
     AuthInfoState,
+    BasicAuthInfo,
     DetailedSiteInfo,
     emptyAuthInfo,
     getSecretForAuthInfo,
+    isBasicAuthInfo,
     isOAuthInfo,
+    OAuthInfo,
     OAuthProvider,
     oauthProviderForSite,
     Product,
@@ -25,8 +29,9 @@ import {
     RemoveAuthInfoEvent,
     UpdateAuthInfoEvent,
 } from './authInfo';
+import { Negotiator } from './negotiate';
 import { OAuthRefesher } from './oauthRefresher';
-import { Tokens } from './tokens';
+
 const keychainServiceNameV3 = version.endsWith('-insider') ? 'atlascode-insiders-authinfoV3' : 'atlascode-authinfoV3';
 
 enum Priority {
@@ -34,14 +39,29 @@ enum Priority {
     Write,
 }
 
+function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export type CheckedScopes = {
+    isApiToken?: boolean;
+    checkedScopes: { [key: string]: boolean };
+};
+
 export class CredentialManager implements Disposable {
     private _memStore: Map<string, Map<string, AuthInfo>> = new Map<string, Map<string, AuthInfo>>();
     private _queue = new PQueue({ concurrency: 1 });
     private _refresher = new OAuthRefesher();
+    private negotiator: Negotiator;
+    private _refreshInFlight = new Map<string, Promise<void>>();
 
-    constructor(private _analyticsClient: AnalyticsClient) {
+    constructor(
+        context: ExtensionContext,
+        private _analyticsClient: AnalyticsClient,
+    ) {
         this._memStore.set(ProductJira.key, new Map<string, AuthInfo>());
         this._memStore.set(ProductBitbucket.key, new Map<string, AuthInfo>());
+        this.negotiator = new Negotiator(context.globalState);
     }
 
     private _onDidAuthChange = new EventEmitter<AuthInfoEvent>();
@@ -59,12 +79,101 @@ export class CredentialManager implements Disposable {
      * it's available, otherwise will return the value in the secretstorage.
      */
     public async getAuthInfo(site: DetailedSiteInfo, allowCache = true): Promise<AuthInfo | undefined> {
-        return this.getAuthInfoForProductAndCredentialId(site, allowCache);
+        const authInfo = await this.getAuthInfoForProductAndCredentialId(site, allowCache);
+        return this.softRefreshOAuth(site, authInfo);
     }
 
-    public async getAllValidAuthInfo(product: Product): Promise<AuthInfo[]> {
+    public async checkScopes(site: DetailedSiteInfo, scopes: string[]): Promise<CheckedScopes | undefined> {
+        // Scopes are only applicable to cloud sites
+        if (!site.host.endsWith('.atlassian.net')) {
+            return undefined;
+        }
+
+        const authInfo = await this.getAuthInfo(site, true);
+
+        if (isOAuthInfo(authInfo)) {
+            const allowedScopes = authInfo.scopes || [];
+            const checkedScopes = scopes.reduce(
+                (acc, scope) => {
+                    acc[scope] = allowedScopes.includes(scope);
+                    return acc;
+                },
+                {} as CheckedScopes['checkedScopes'],
+            );
+
+            return {
+                isApiToken: allowedScopes.length === 0,
+                checkedScopes,
+            };
+        }
+        // Basic auth for cloud site means API token
+        if (isBasicAuthInfo(authInfo)) {
+            return {
+                isApiToken: true,
+                checkedScopes: {},
+            };
+        }
+        return undefined;
+    }
+
+    async getApiTokenIfExists(site: DetailedSiteInfo): Promise<BasicAuthInfo | undefined> {
+        // Only applicable to cloud sites
+        if (!site.host.endsWith('.atlassian.net')) {
+            return undefined;
+        }
+
+        // this.getAuthInfo relies on credentialId, which can be different between oauth and API token
+        // We can't rely on site.credentialId, so let's check the site from scratch
+        // TODO: switch this to use this.getAuthInfo after some time when enough users are on the new logic
+        const sites = Container.siteManager.getSitesAvailable(ProductJira);
+        const selectedSite = sites.find((s) => s.id === site.id);
+        if (!selectedSite) {
+            return undefined;
+        }
+
+        const authInfo = await this.getAuthInfo(selectedSite);
+        if (isBasicAuthInfo(authInfo)) {
+            return authInfo;
+        }
+
+        return undefined;
+    }
+
+    async findApiTokenForSite(site?: DetailedSiteInfo | string): Promise<BasicAuthInfo | undefined> {
+        const siteToCheck = typeof site === 'string' ? Container.siteManager.getSiteForId(ProductJira, site) : site;
+
+        if (!siteToCheck || !siteToCheck.host.endsWith('.atlassian.net')) {
+            return undefined;
+        }
+
+        const sites = Container.siteManager.getSitesAvailable(ProductJira);
+        const selectedSiteEmail = (await this.getAuthInfo(siteToCheck))?.user.email;
+
+        // For a cloud site - check if we have another cloud site with the same user and API key
+        const promises = sites
+            .filter((site) => site.host.endsWith('.atlassian.net'))
+            .map(async (site) => {
+                const authInfo = await this.getAuthInfo(site);
+                if (authInfo?.user.email === selectedSiteEmail && isBasicAuthInfo(authInfo)) {
+                    // There's another site with the same user and cloud, so we can use that API key for suggestions
+                    return authInfo as BasicAuthInfo;
+                }
+                return undefined;
+            });
+
+        const results = await Promise.all(promises);
+        return results.find((authInfo) => authInfo !== undefined);
+    }
+
+    public async getAllValidAuthInfo(
+        product: Product,
+        siteFilter?: (site: DetailedSiteInfo) => boolean,
+    ): Promise<AuthInfo[]> {
         // Get all unique sites by credentialId
-        const sites = Container.siteManager.getSitesAvailable(product);
+        let sites = Container.siteManager.getSitesAvailable(product);
+        if (siteFilter) {
+            sites = sites.filter(siteFilter);
+        }
         const uniquelyCredentialedSites = Array.from(new Map(sites.map((site) => [site.credentialId, site])).values());
 
         const authInfos = await Promise.all(uniquelyCredentialedSites.map((site) => this.getAuthInfo(site, true)));
@@ -74,10 +183,25 @@ export class CredentialManager implements Disposable {
         );
     }
 
+    // Gets valid auth info for cloud sites, deduplicated by user email (used for notifications and handles OAuth + API token for the same user)
+    public async getCloudAuthInfo(product: Product): Promise<AuthInfo[]> {
+        const authInfos = await this.getAllValidAuthInfo(product, (site) => site.isCloud);
+
+        const uniqueByEmail = new Map<string, AuthInfo>();
+        authInfos.forEach((authInfo) => {
+            const email = authInfo.user.email;
+            if (email && !uniqueByEmail.has(email)) {
+                uniqueByEmail.set(email, authInfo);
+            }
+        });
+        return Array.from(uniqueByEmail.values());
+    }
+
     /**
      * Saves the auth info to both the in-memory store and the secretstorage.
      */
     public async saveAuthInfo(site: DetailedSiteInfo, info: AuthInfo): Promise<void> {
+        this.appendMetaData(info);
         Logger.debug(`Saving auth info for site: ${site.baseApiUrl} credentialID: ${site.credentialId}`);
         let productAuths = this._memStore.get(site.product.key);
 
@@ -85,7 +209,7 @@ export class CredentialManager implements Disposable {
             productAuths = new Map<string, AuthInfo>();
         }
 
-        const existingInfo = await this.getAuthInfo(site, false);
+        const existingInfo = await this.getAuthInfoForProductAndCredentialId(site, false);
 
         this._memStore.set(site.product.key, productAuths.set(site.credentialId, info));
 
@@ -109,6 +233,48 @@ export class CredentialManager implements Disposable {
             } catch (e) {
                 Logger.debug('error saving auth info to secretstorage: ', e);
             }
+        }
+    }
+
+    private appendMetaData(info: AuthInfo): void {
+        if (isOAuthInfo(info)) {
+            // set expiration date if not present
+            this.setExpirationDate(info);
+        }
+    }
+
+    private setExpirationDate(info: OAuthInfo): void {
+        // Skip if expiration date is already set
+        if (info.expirationDate) {
+            return;
+        }
+
+        // Try to extract expiration from JWT token
+        const expirationFromJwt = this.extractExpirationFromJwt(info.access);
+        if (expirationFromJwt) {
+            info.expirationDate = expirationFromJwt;
+            return;
+        }
+
+        // Fallback: set expiration to 1 hour from token creation/receipt
+        const baseTime = info.iat || info.recievedAt || Date.now();
+        info.expirationDate = baseTime + Time.HOURS;
+    }
+
+    private extractExpirationFromJwt(accessToken: string): number | null {
+        try {
+            const tokenParts = accessToken.split('.');
+            if (tokenParts.length !== 3) {
+                Logger.debug('Invalid JWT token format, expected 3 parts');
+                return null;
+            }
+
+            const payload = JSON.parse(Buffer.from(tokenParts[1], 'base64').toString('utf8'));
+
+            return payload.exp ? payload.exp * 1000 : null;
+        } catch (error) {
+            Logger.debug('Failed to parse JWT token for expiration', error);
+            return null;
         }
     }
 
@@ -158,7 +324,7 @@ export class CredentialManager implements Disposable {
                                 `Removing dead site for product ${site.product.key}: auth info not found in keychain`,
                             );
                             await Container.clientManager.removeClient(site);
-                            Container.siteManager.removeSite(site);
+                            await Container.siteManager.removeSite(site, false, false);
                         }
                     } else {
                         // else if keychain does not exist, we check if the current site has been saved, if yes then we should remove it
@@ -170,7 +336,7 @@ export class CredentialManager implements Disposable {
                                 `Removing dead site for product ${site.product.key}: keychain not found`,
                             );
                             await Container.clientManager.removeClient(site);
-                            Container.siteManager.removeSite(site);
+                            await Container.siteManager.removeSite(site, false, false);
                         }
                     }
                 }
@@ -190,24 +356,57 @@ export class CredentialManager implements Disposable {
         }
 
         return foundInfo;
-        //return foundInfo ? foundInfo : Promise.reject(`no authentication info found for site ${site.hostname}`);
     }
 
-    /**
-     * Deletes the secretstorage item.
-     *
-     * @remarks
-     * This only deletes the secretstorage item, leaving the in-memory store un-touched. It's
-     * meant to be used during migrations.
-     */
-    public async deleteSecretStorageItem(productKey: string) {
-        try {
-            // secretstorage can be accessed using the ExtensionContext provided by vscode to the activate function and the Container class has the
-            // "ExtensionContext" stored as it's private static member, hence using it to access vscode's secretstorage
-            await Container.context.secrets.delete(productKey);
-        } catch (e) {
-            Logger.info(`secretstorage error ${e}`);
+    private async softRefreshOAuth(site: DetailedSiteInfo, authInfo: AuthInfo | undefined) {
+        const credentials = authInfo;
+
+        if (!isOAuthInfo(credentials)) {
+            return authInfo; // not an OAuth info, no need to refresh
         }
+        const GRACE_PERIOD = 10 * Time.MINUTES;
+
+        if (credentials.expirationDate) {
+            const diff = credentials.expirationDate - Date.now();
+            Logger.debug(`${Math.floor(diff / 1000)} seconds remaining for auth token.`);
+            if (diff > GRACE_PERIOD) {
+                return credentials; // no need to refresh, we have enough time left
+            }
+            Logger.debug(`Need new auth token.`);
+        }
+
+        const key = `${site.product.key}:${site.credentialId}`;
+
+        if (this.negotiator.thisIsTheResponsibleProcess()) {
+            Logger.debug(`Refreshing credentials.`);
+            let inFlight = this._refreshInFlight.get(key);
+
+            if (!inFlight) {
+                inFlight = (async () => {
+                    try {
+                        await Container.credentialManager.refreshAccessToken(site);
+                    } finally {
+                        this._refreshInFlight.delete(key);
+                    }
+                })();
+
+                this._refreshInFlight.set(key, inFlight);
+            }
+            try {
+                await inFlight;
+            } catch (e) {
+                Logger.error(e, 'error refreshing token');
+                return Promise.reject(
+                    `Your ${site.product.name} session has expired. Please sign in again to continue.`,
+                );
+            }
+        } else {
+            Logger.debug(`This process isn't in charge of refreshing credentials.`);
+            await this.negotiator.requestTokenRefreshForSite(JSON.stringify(site));
+            await sleep(5000);
+        }
+
+        return this.getAuthInfoForProductAndCredentialId(site, false);
     }
 
     private async addSiteInformationToSecretStorage(productKey: string, credentialId: string, info: AuthInfo) {
@@ -323,15 +522,15 @@ export class CredentialManager implements Disposable {
     /**
      * Calls the OAuth provider and updates the access token.
      */
-    public async refreshAccessToken(site: DetailedSiteInfo): Promise<Tokens | undefined> {
-        const credentials = await this.getAuthInfo(site);
+    private async refreshAccessToken(site: DetailedSiteInfo): Promise<void> {
+        const credentials = await this.getAuthInfoForProductAndCredentialId(site, false);
         if (!isOAuthInfo(credentials)) {
             return undefined;
         }
         Logger.debug(`refreshingAccessToken for ${site.baseApiUrl} credentialID: ${site.credentialId}`);
 
         const provider: OAuthProvider | undefined = oauthProviderForSite(site);
-        const newTokens = undefined;
+
         if (provider && credentials) {
             const tokenResponse = await this._refresher.getNewTokens(provider, credentials.refresh);
             if (tokenResponse.tokens) {
@@ -344,13 +543,13 @@ export class CredentialManager implements Disposable {
                     credentials.iat = newTokens.iat ?? 0;
                 }
 
-                this.saveAuthInfo(site, credentials);
+                await this.saveAuthInfo(site, credentials);
+                Logger.debug(`Successfully saved refreshed tokens for credentialId: ${site.credentialId}`);
             } else if (tokenResponse.shouldInvalidate) {
                 credentials.state = AuthInfoState.Invalid;
-                this.saveAuthInfo(site, credentials);
+                await this.saveAuthInfo(site, credentials);
             }
         }
-        return newTokens;
     }
 
     /**

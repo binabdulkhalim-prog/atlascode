@@ -1,6 +1,6 @@
-import { defaultActionGuard, defaultStateGuard, ReducerAction } from '@atlassianlabs/guipi-core-controller';
 import { MinimalIssue } from '@atlassianlabs/jira-pi-common-models';
 import React, { useCallback, useMemo, useReducer } from 'react';
+import { defaultActionGuard, defaultStateGuard, ReducerAction } from 'src/ipc/messaging';
 import { v4 } from 'uuid';
 
 import { DetailedSiteInfo } from '../../../atlclients/authInfo';
@@ -19,7 +19,6 @@ import { CommonActionType } from '../../../lib/ipc/fromUI/common';
 import { PullRequestDetailsAction, PullRequestDetailsActionType } from '../../../lib/ipc/fromUI/pullRequestDetails';
 import {
     emptyPullRequestDetailsInitMessage,
-    FetchUsersResponseMessage,
     PullRequestDetailsApprovalMessage,
     PullRequestDetailsBuildStatusesMessage,
     PullRequestDetailsCheckoutBranchMessage,
@@ -67,6 +66,7 @@ export interface PullRequestDetailsControllerApi {
     ) => void;
     openJiraIssue: (issue: MinimalIssue<DetailedSiteInfo>) => void;
     openBuildStatus: (buildStatus: BuildStatus) => void;
+    handleEditorFocus: (isFocused: boolean) => void;
 }
 
 const emptyApi: PullRequestDetailsControllerApi = {
@@ -101,6 +101,7 @@ const emptyApi: PullRequestDetailsControllerApi = {
 
     openJiraIssue: (issue: MinimalIssue<DetailedSiteInfo>) => {},
     openBuildStatus: (buildStatus: BuildStatus) => {},
+    handleEditorFocus: (isFocused: boolean) => {},
 };
 
 export const PullRequestDetailsControllerContext = React.createContext(emptyApi);
@@ -364,7 +365,7 @@ export function usePullRequestDetailsController(): [PullRequestDetailsState, Pul
         }
     }, []);
 
-    const [postMessage, postMessagePromise] = useMessagingApi<
+    const { postMessage, postMessagePromise } = useMessagingApi<
         PullRequestDetailsAction,
         PullRequestDetailsMessage,
         PullRequestDetailsResponse
@@ -409,7 +410,7 @@ export function usePullRequestDetailsController(): [PullRequestDetailsState, Pul
                             PullRequestDetailsMessageType.FetchUsersResponse,
                             ConnectionTimeout,
                         );
-                        resolve((response as FetchUsersResponseMessage).users);
+                        resolve(response.users);
                     } catch (e) {
                         reject(e);
                     }
@@ -664,6 +665,16 @@ export function usePullRequestDetailsController(): [PullRequestDetailsState, Pul
         [postMessage],
     );
 
+    const handleEditorFocus = useCallback(
+        (isFocused: boolean) => {
+            postMessage({
+                type: PullRequestDetailsActionType.HandleEditorFocus,
+                isFocused: isFocused,
+            });
+        },
+        [postMessage],
+    );
+
     const controllerApi = useMemo<PullRequestDetailsControllerApi>((): PullRequestDetailsControllerApi => {
         return {
             postMessage: postMessage,
@@ -685,6 +696,7 @@ export function usePullRequestDetailsController(): [PullRequestDetailsState, Pul
             merge: merge,
             openJiraIssue: openJiraIssue,
             openBuildStatus: openBuildStatus,
+            handleEditorFocus: handleEditorFocus,
         };
     }, [
         postMessage,
@@ -706,6 +718,7 @@ export function usePullRequestDetailsController(): [PullRequestDetailsState, Pul
         merge,
         openJiraIssue,
         openBuildStatus,
+        handleEditorFocus,
     ]);
 
     return [state, controllerApi];

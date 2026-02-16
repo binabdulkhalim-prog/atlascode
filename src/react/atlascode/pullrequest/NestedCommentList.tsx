@@ -1,7 +1,8 @@
-import { Grid, makeStyles } from '@material-ui/core';
+import { Grid } from '@mui/material';
+import { makeStyles } from '@mui/styles';
 import React from 'react';
 
-import { Comment, User } from '../../../bitbucket/model';
+import { Comment, PullRequestState, User } from '../../../bitbucket/model';
 import { NestedComment } from './NestedComment';
 
 type NestedCommentListProps = {
@@ -9,6 +10,8 @@ type NestedCommentListProps = {
     currentUser: User;
     fetchUsers: (input: string) => Promise<User[]>;
     onDelete: (comment: Comment) => Promise<void>;
+    pullRequestState: PullRequestState;
+    handleEditorFocus: (isFocused: boolean) => void;
 };
 
 const useStyles = makeStyles({
@@ -22,10 +25,12 @@ export const NestedCommentList: React.FunctionComponent<NestedCommentListProps> 
     currentUser,
     fetchUsers,
     onDelete,
+    pullRequestState,
+    handleEditorFocus,
 }) => {
     const classes = useStyles();
     return (
-        <Grid container spacing={1} direction="column" justify="center">
+        <Grid container spacing={1} direction="column" justifyContent="center" data-testid="pullrequest.comment-list">
             {comments.map((comment) => (
                 <Grid item key={comment.id} className={classes.nestedComment}>
                     <NestedComment
@@ -33,6 +38,8 @@ export const NestedCommentList: React.FunctionComponent<NestedCommentListProps> 
                         currentUser={currentUser}
                         fetchUsers={fetchUsers}
                         onDelete={onDelete}
+                        pullRequestState={pullRequestState}
+                        handleEditorFocus={handleEditorFocus}
                     />
                 </Grid>
             ))}

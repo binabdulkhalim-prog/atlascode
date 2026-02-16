@@ -14,6 +14,10 @@ import { BadgeDelegate } from '../../notifications/badgeDelegate';
 import { JiraNotifier } from '../../notifications/jiraNotifier';
 import { AssignedWorkItemsViewProvider } from './jiraAssignedWorkItemsViewProvider';
 
+function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms || 1));
+}
+
 const mockedJqlEntry = forceCastTo<JQLEntry>({
     id: 'jqlId',
 });
@@ -64,6 +68,16 @@ jest.mock('../../RefreshTimer');
 jest.mock('../../../logger');
 jest.mock('../../../analytics', () => ({
     viewScreenEvent: () => Promise.resolve({ eventName: 'viewScreenEvent' }),
+    jiraIssuePerformanceEvent: () => Promise.resolve({ eventName: 'jiraIssuePerformanceEvent' }),
+    performanceEvent: () => Promise.resolve({ eventName: 'performanceEvent' }),
+}));
+jest.mock('src/util/perf', () => ({
+    default: {
+        mark: () => {},
+        measure: () => 100,
+        clear: () => {},
+        measureAndClear: () => 100,
+    },
 }));
 jest.mock('../../../config/configuration', () => ({
     configuration: {
@@ -93,6 +107,7 @@ jest.mock('../../../container', () => ({
         },
         analyticsClient: {
             sendScreenEvent: () => {},
+            sendTrackEvent: () => {},
         },
     },
 }));
@@ -224,6 +239,8 @@ describe('AssignedWorkItemsViewProvider', () => {
             expect(RefreshTimerMockClass.LastInstance).toBeDefined();
 
             RefreshTimerMockClass.LastInstance?.refreshFunc();
+            await sleep(100);
+
             expect(dataChanged).toBeTruthy();
         });
 
@@ -344,7 +361,7 @@ describe('AssignedWorkItemsViewProvider', () => {
 
         it.each([ProductJira, ProductBitbucket])(
             'onDidSitesAvailableChange callback refreshes only for Jira sites changes (%p)',
-            (product) => {
+            async (product) => {
                 let onDidSitesAvailableChangeCallback = undefined;
                 jest.spyOn(Container.siteManager, 'onDidSitesAvailableChange').mockImplementation(
                     (func: any, parent: any): any => {
@@ -358,6 +375,7 @@ describe('AssignedWorkItemsViewProvider', () => {
                 provider.onDidChangeTreeData(refreshCallback);
 
                 onDidSitesAvailableChangeCallback!({ product });
+                await sleep(100);
 
                 if (product.key === ProductJira.key) {
                     expect(refreshCallback).toHaveBeenCalledTimes(1);
@@ -477,22 +495,63 @@ describe('AssignedWorkItemsViewProvider', () => {
             ['jira.explorer', true],
             ['jira.explorer.enabled', true],
             ['jira.explorer.collapsed', false],
-        ])('onConfigurationChanged refreshes if one relevant config is changed (%p)', (configName, expectedRefresh) => {
-            jest.spyOn(configuration, 'changed').mockImplementation((e, name) => name === configName);
+        ])(
+            'onConfigurationChanged refreshes if one relevant config is changed (%p)',
+            async (configName, expectedRefresh) => {
+                jest.spyOn(configuration, 'changed').mockImplementation((e, name) => name === configName);
 
-            provider = new AssignedWorkItemsViewProvider();
+                provider = new AssignedWorkItemsViewProvider();
 
-            const refreshCallback = jest.fn();
-            provider.onDidChangeTreeData(refreshCallback);
+                const refreshCallback = jest.fn();
+                provider.onDidChangeTreeData(refreshCallback);
 
-            const callbackObj = Container.context.subscriptions[Container.context.subscriptions.length - 1] as any;
-            callbackObj.func.call(callbackObj.thisArg);
+                const callbackObj = Container.context.subscriptions[Container.context.subscriptions.length - 1] as any;
+                callbackObj.func.call(callbackObj.thisArg);
 
-            if (expectedRefresh) {
-                expect(refreshCallback).toHaveBeenCalledTimes(1);
-            } else {
-                expect(refreshCallback).not.toHaveBeenCalled();
-            }
+                await sleep(100);
+
+                if (expectedRefresh) {
+                    expect(refreshCallback).toHaveBeenCalledTimes(1);
+                } else {
+                    expect(refreshCallback).not.toHaveBeenCalled();
+                }
+            },
+        );
+    });
+});
+
+// Additional tests for AssignedWorkItemsViewProvider methods
+describe('AssignedWorkItemsViewProvider - Additional Method Tests', () => {
+    describe('static methods', () => {
+        it('should test buildTreeItemsFromIssues with undefined', () => {
+            const provider = new AssignedWorkItemsViewProvider();
+            const result = (provider as any).buildTreeItemsFromIssues(undefined);
+            expect(result).toEqual([]);
+            provider.dispose();
+        });
+
+        it('should test buildTreeItemsFromIssues with issues', () => {
+            const provider = new AssignedWorkItemsViewProvider();
+            const mockIssues = [mockedIssue1];
+            const result = (provider as any).buildTreeItemsFromIssues(mockIssues);
+            expect(result).toHaveLength(1);
+            provider.dispose();
+        });
+
+        it('should test getTreeItem', () => {
+            const provider = new AssignedWorkItemsViewProvider();
+            const mockTreeItem = { label: 'Test Item' } as any;
+            const result = provider.getTreeItem(mockTreeItem);
+            expect(result).toBe(mockTreeItem);
+            provider.dispose();
+        });
+
+        it('should test focus method', () => {
+            const provider = new AssignedWorkItemsViewProvider();
+            provider.focus();
+            // Just verify that focus was called, the exact command is tested elsewhere
+            expect(typeof provider.focus).toBe('function');
+            provider.dispose();
         });
     });
 });

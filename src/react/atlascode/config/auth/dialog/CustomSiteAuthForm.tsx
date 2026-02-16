@@ -1,10 +1,12 @@
 import { ToggleWithLabel } from '@atlassianlabs/guipi-core-components';
-import { Box, Grid, IconButton, Radio, RadioGroup, Switch, Tab, Tabs, TextField } from '@material-ui/core';
-import Visibility from '@material-ui/icons/Visibility';
-import VisibilityOff from '@material-ui/icons/VisibilityOff';
-import React, { useState } from 'react';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import { Box, Grid, IconButton, Radio, RadioGroup, Switch, Tab, Tabs, TextField } from '@mui/material';
+import React from 'react';
 import { BasicAuthInfo } from 'src/atlclients/authInfo';
 import { SiteWithAuthInfo } from 'src/lib/ipc/toUI/config';
+import { FIELD_NAMES } from 'src/react/atlascode/constants';
+import { clearFieldsAndWatches } from 'src/react/atlascode/util/authFormUtils';
 
 import { TabPanel } from './TabPanel';
 
@@ -18,8 +20,11 @@ export type CustomSiteAuthFormProps = {
     registerRequiredString: any;
     authFormState: any;
     updateState: any;
+    updateWatches: (updates: Record<string, string>) => void;
     preventClickDefault: any;
     defaultSSLType: string;
+    authTypeTabIndex: number;
+    setAuthTypeTabIndex: (index: number) => void;
 };
 
 export const CustomSiteAuthForm = ({
@@ -32,11 +37,12 @@ export const CustomSiteAuthForm = ({
     registerRequiredString,
     authFormState,
     updateState,
+    updateWatches,
     preventClickDefault,
     defaultSSLType,
+    authTypeTabIndex,
+    setAuthTypeTabIndex,
 }: CustomSiteAuthFormProps) => {
-    const [authTypeTabIndex, setAuthTypeTabIndex] = useState(0);
-
     return (
         <React.Fragment>
             <Grid item>
@@ -49,6 +55,13 @@ export const CustomSiteAuthForm = ({
                             color="primary"
                             id="contextPathEnabled"
                             inputRef={register}
+                            onChange={(e) => {
+                                if (!e.target.checked) {
+                                    clearFieldsAndWatches(updateWatches, { contextPath: '' }, [
+                                        FIELD_NAMES.CONTEXT_PATH,
+                                    ]);
+                                }
+                            }}
                         />
                     }
                     spacing={1}
@@ -62,7 +75,7 @@ export const CustomSiteAuthForm = ({
                         <TextField
                             required
                             autoFocus
-                            margin="dense"
+                            size="small"
                             id="contextPath"
                             name="contextPath"
                             label="Context path"
@@ -92,7 +105,7 @@ export const CustomSiteAuthForm = ({
                 <Grid item>
                     <TextField
                         required
-                        margin="dense"
+                        size="small"
                         id="username"
                         name="username"
                         label="Username"
@@ -106,11 +119,10 @@ export const CustomSiteAuthForm = ({
                 <Grid item>
                     <TextField
                         required
-                        margin="dense"
+                        size="small"
                         id="password"
                         name="password"
                         label="Password"
-                        defaultValue={(defaultSiteWithAuth.auth as BasicAuthInfo).password}
                         type={authFormState.showPassword ? 'text' : 'password'}
                         helperText={errors.password ? errors.password : undefined}
                         fullWidth
@@ -126,6 +138,7 @@ export const CustomSiteAuthForm = ({
                                         })
                                     }
                                     onMouseDown={preventClickDefault}
+                                    size="large"
                                 >
                                     {authFormState.showPassword ? (
                                         <Visibility fontSize="small" />
@@ -143,7 +156,7 @@ export const CustomSiteAuthForm = ({
                     <TextField
                         required
                         type="password"
-                        margin="dense"
+                        size="small"
                         id="personalAccessToken"
                         name="personalAccessToken"
                         label="Personal Access Token"
@@ -166,6 +179,15 @@ export const CustomSiteAuthForm = ({
                             id="customSSLEnabled"
                             value="customSSLEnabled"
                             inputRef={register}
+                            onChange={(e) => {
+                                if (!e.target.checked) {
+                                    clearFieldsAndWatches(
+                                        updateWatches,
+                                        { sslCertPaths: '', pfxPath: '', pfxPassphrase: '' },
+                                        [FIELD_NAMES.SSL_CERT_PATHS, FIELD_NAMES.PFX_PATH, FIELD_NAMES.PFX_PASSPHRASE],
+                                    );
+                                }
+                            }}
                         />
                     }
                     spacing={1}
@@ -173,14 +195,27 @@ export const CustomSiteAuthForm = ({
                     label="Use Custom SSL Settings"
                 />
             </Grid>
-
             {watches.customSSLEnabled && (
                 <Box marginLeft={3}>
                     <Grid item>
                         <RadioGroup id="customSSLType" name="customSSLType" defaultValue={defaultSSLType}>
                             <ToggleWithLabel
                                 control={
-                                    <Radio inputRef={register} size="small" color="primary" value="customServerSSL" />
+                                    <Radio
+                                        inputRef={register}
+                                        size="small"
+                                        color="primary"
+                                        value="customServerSSL"
+                                        onChange={(e) => {
+                                            if (e.target.value === 'customServerSSL') {
+                                                clearFieldsAndWatches(
+                                                    updateWatches,
+                                                    { pfxPath: '', pfxPassphrase: '' },
+                                                    [FIELD_NAMES.PFX_PATH, FIELD_NAMES.PFX_PASSPHRASE],
+                                                );
+                                            }
+                                        }}
+                                    />
                                 }
                                 spacing={1}
                                 label="Use custom CA certificate(s) (e.g. a self-signed cert)"
@@ -188,7 +223,19 @@ export const CustomSiteAuthForm = ({
                             />
                             <ToggleWithLabel
                                 control={
-                                    <Radio inputRef={register} value="customClientSSL" color="primary" size="small" />
+                                    <Radio
+                                        inputRef={register}
+                                        value="customClientSSL"
+                                        color="primary"
+                                        size="small"
+                                        onChange={(e) => {
+                                            if (e.target.value === 'customClientSSL') {
+                                                clearFieldsAndWatches(updateWatches, { sslCertPaths: '' }, [
+                                                    FIELD_NAMES.SSL_CERT_PATHS,
+                                                ]);
+                                            }
+                                        }}
+                                    />
                                 }
                                 spacing={1}
                                 label="Use custom client-side certificates (CA certificates bundled in PKCS#12 (pfx)"
@@ -198,13 +245,12 @@ export const CustomSiteAuthForm = ({
                     </Grid>
                 </Box>
             )}
-
             {watches.customSSLEnabled && watches.customSSLType === 'customServerSSL' && (
                 <Box marginLeft={3}>
                     <Grid item>
                         <TextField
                             required
-                            margin="dense"
+                            size="small"
                             id="sslCertPaths"
                             name="sslCertPaths"
                             label="sslCertPaths"
@@ -221,13 +267,12 @@ export const CustomSiteAuthForm = ({
                     </Grid>
                 </Box>
             )}
-
             {watches.customSSLEnabled && watches.customSSLType === 'customClientSSL' && (
                 <Box marginLeft={3}>
                     <Grid item>
                         <TextField
                             required
-                            margin="dense"
+                            size="small"
                             id="pfxPath"
                             name="pfxPath"
                             label="pfxPath"
@@ -242,7 +287,7 @@ export const CustomSiteAuthForm = ({
                     </Grid>
                     <Grid item>
                         <TextField
-                            margin="dense"
+                            size="small"
                             id="pfxPassphrase"
                             name="pfxPassphrase"
                             label="PFX passphrase"
@@ -261,6 +306,7 @@ export const CustomSiteAuthForm = ({
                                             })
                                         }
                                         onMouseDown={preventClickDefault}
+                                        size="large"
                                     >
                                         {authFormState.showPFXPassphrase ? (
                                             <Visibility fontSize="small" />

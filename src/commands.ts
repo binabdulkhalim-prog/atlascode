@@ -1,5 +1,5 @@
 import { isMinimalIssue, MinimalIssue, MinimalIssueOrKeyAndSite } from '@atlassianlabs/jira-pi-common-models';
-import { commands, env, ExtensionContext, Uri, window } from 'vscode';
+import { commands, Disposable, env, ExtensionContext, TextEditor, Uri, window } from 'vscode';
 
 import {
     cloneRepositoryButtonEvent,
@@ -8,8 +8,11 @@ import {
     Registry,
     viewScreenEvent,
 } from './analytics';
-import { DetailedSiteInfo, ProductBitbucket, ProductJira } from './atlclients/authInfo';
+import { CreateIssueSource } from './analyticsTypes';
+import { BasicAuthInfo, DetailedSiteInfo, ProductBitbucket, ProductJira } from './atlclients/authInfo';
 import { showBitbucketDebugInfo } from './bitbucket/bbDebug';
+import { setCommandContext } from './commandContext';
+import { addAtlascodeAsRecommendedExtension } from './commands/addRecommendedExtension';
 import { rerunPipeline } from './commands/bitbucket/rerunPipeline';
 import { runPipeline } from './commands/bitbucket/runPipeline';
 import { assignIssue } from './commands/jira/assignIssue';
@@ -17,81 +20,26 @@ import { createIssue } from './commands/jira/createIssue';
 import { showIssue, showIssueForKey, showIssueForSiteIdAndKey, showIssueForURL } from './commands/jira/showIssue';
 import { startWorkOnIssue } from './commands/jira/startWorkOnIssue';
 import { configuration } from './config/configuration';
-import { Commands, HelpTreeViewId } from './constants';
+import { Commands, ExtensionId, HelpTreeViewId } from './constants';
 import { Container } from './container';
+import { FilterProvider } from './filter/filterProvider';
 import { transitionIssue } from './jira/transitionIssue';
 import { knownLinkIdMap } from './lib/ipc/models/common';
-import { ConfigSection, ConfigSubSection } from './lib/ipc/models/config';
+import { ConfigSection, ConfigSubSection, ConfigV3Section, ConfigV3SubSection } from './lib/ipc/models/config';
 import { Logger } from './logger';
+import { runQuickAuth } from './onboarding/quickFlow';
+import { AuthenticationType } from './onboarding/quickFlow/authentication/types';
+import { RovodevCommands } from './rovo-dev/api/componentApi';
+import { RovoDevContextItem } from './rovo-dev/rovoDevTypes';
+import { openRovoDevConfigFile } from './rovo-dev/rovoDevUtils';
+import { Experiments, Features } from './util/featureFlags';
 import { AbstractBaseNode } from './views/nodes/abstractBaseNode';
 import { IssueNode } from './views/nodes/issueNode';
 import { PipelineNode } from './views/pipelines/PipelinesTree';
 
 export function registerCommands(vscodeContext: ExtensionContext) {
+    // here, add any setting that doesn't depend on which settings page is enabled
     vscodeContext.subscriptions.push(
-        commands.registerCommand(Commands.AddJiraSite, () =>
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Jira,
-                subSection: ConfigSubSection.Auth,
-            }),
-        ),
-        commands.registerCommand(Commands.CreateNewJql, () =>
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Jira,
-                subSection: ConfigSubSection.Issues,
-            }),
-        ),
-        commands.registerCommand(Commands.ShowConfigPage, () =>
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Jira,
-                subSection: ConfigSubSection.Auth,
-            }),
-        ),
-        commands.registerCommand(Commands.ShowConfigPageFromExtensionContext, () => {
-            Container.analyticsApi.fireOpenSettingsButtonEvent('extensionContext');
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Jira,
-                subSection: ConfigSubSection.Auth,
-            });
-        }),
-        commands.registerCommand(Commands.ShowJiraAuth, () =>
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Jira,
-                subSection: ConfigSubSection.Auth,
-            }),
-        ),
-        commands.registerCommand(Commands.ShowBitbucketAuth, () =>
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Bitbucket,
-                subSection: ConfigSubSection.Auth,
-            }),
-        ),
-        commands.registerCommand(Commands.ShowJiraIssueSettings, () =>
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Jira,
-                subSection: ConfigSubSection.Issues,
-            }),
-        ),
-        commands.registerCommand(Commands.ShowPullRequestSettings, () =>
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Bitbucket,
-                subSection: ConfigSubSection.PR,
-            }),
-        ),
-        commands.registerCommand(Commands.ShowPipelineSettings, () =>
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Bitbucket,
-                subSection: ConfigSubSection.Pipelines,
-            }),
-        ),
-        commands.registerCommand(Commands.ShowExploreSettings, () => {
-            Container.analyticsApi.fireExploreFeaturesButtonEvent(HelpTreeViewId);
-            Container.settingsWebviewFactory.createOrShow({
-                section: ConfigSection.Explore,
-                subSection: undefined,
-            });
-        }),
-        commands.registerCommand(Commands.ShowOnboardingPage, () => Container.onboardingWebviewFactory.createOrShow()),
         commands.registerCommand(
             Commands.ViewInWebBrowser,
             async (prNode: AbstractBaseNode, source?: string, linkId?: string) => {
@@ -104,7 +52,14 @@ export function registerCommands(vscodeContext: ExtensionContext) {
                 }
             },
         ),
-        commands.registerCommand(Commands.CreateIssue, (data: any, source?: string) => createIssue(data, source)),
+        commands.registerCommand(Commands.CreateIssue, (data: any, source?: CreateIssueSource) => {
+            const effectiveSource: CreateIssueSource = source ?? (data === undefined ? 'commandPalette' : 'explorer');
+            return createIssue(data, effectiveSource);
+        }),
+        commands.registerCommand(Commands.CreateIssueFromSidebar, () => createIssue(undefined, 'sidebarButton')),
+        commands.registerCommand(Commands.CreateIssueFromIssueContext, () =>
+            createIssue(undefined, 'issueContextMenu'),
+        ),
         commands.registerCommand(
             Commands.ShowIssue,
             async (issueOrKeyAndSite: MinimalIssueOrKeyAndSite<DetailedSiteInfo>) => await showIssue(issueOrKeyAndSite),
@@ -204,5 +159,349 @@ export function registerCommands(vscodeContext: ExtensionContext) {
             Container.openPullRequestHandler(data.pullRequestUrl);
         }),
         commands.registerCommand(Commands.ShowOnboardingFlow, () => Container.onboardingProvider.start()),
+        commands.registerCommand(Commands.JiraFilter, () => FilterProvider.createFilterQuickPick()),
+        commands.registerCommand(Commands.JiraLogin, () => {
+            const useNewAuthFlow = Container.featureFlagClient.checkGate(Features.UseNewAuthFlow);
+            if (useNewAuthFlow) {
+                runQuickAuth({ initialState: { product: ProductJira }, origin: 'settings' });
+            } else {
+                commands.executeCommand(Commands.ShowConfigPage);
+            }
+        }),
+        commands.registerCommand(Commands.AddRecommendedExtension, addAtlascodeAsRecommendedExtension),
+        commands.registerCommand(Commands.ExpandCreateWorkItemWebview, () => {
+            Container.createIssueWebview.createOrShow();
+            setCommandContext('atlascode:showCreateWorkItemWebview', false);
+        }),
+        commands.registerCommand(
+            Commands.CopyImageElement,
+            (commandContext: { viewKey: string; webviewSection: string; isContextMenuOnImage: boolean }) => {
+                if (commandContext.webviewSection === 'jiraImageElement') {
+                    Container.jiraIssueViewManager.handleContextMenu({
+                        viewKey: commandContext.viewKey,
+                        action: 'copy',
+                        data: commandContext,
+                    });
+                }
+            },
+        ),
     );
+
+    const settingsFeatureValue = Container.featureFlagClient.checkExperimentValue(
+        Experiments.AtlascodeNewSettingsExperiment,
+    );
+
+    // here, add any setting for which their implementation depends on which settings page is enabled
+    if (settingsFeatureValue) {
+        vscodeContext.subscriptions.push(
+            commands.registerCommand(Commands.AddJiraSite, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigV3Section.Auth,
+                    subSection: ConfigV3SubSection.JiraAuth,
+                }),
+            ),
+            commands.registerCommand(Commands.CreateNewJql, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigV3Section.AdvancedConfig,
+                    subSection: ConfigV3SubSection.Issues,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowConfigPage, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigV3Section.Auth,
+                    subSection: ConfigV3SubSection.JiraAuth,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowConfigPageFromExtensionContext, () => {
+                Container.analyticsApi.fireOpenSettingsButtonEvent('extensionContext');
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigV3Section.Auth,
+                    subSection: ConfigV3SubSection.JiraAuth,
+                });
+            }),
+            commands.registerCommand(Commands.ShowJiraAuth, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigV3Section.Auth,
+                    subSection: ConfigV3SubSection.JiraAuth,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowBitbucketAuth, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigV3Section.Auth,
+                    subSection: ConfigV3SubSection.BbAuth,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowJiraIssueSettings, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigV3Section.AdvancedConfig,
+                    subSection: undefined,
+                }),
+            ),
+            // Natigate them to VSCode Native settings
+            commands.registerCommand(Commands.ShowPullRequestSettings, () =>
+                commands.executeCommand('workbench.action.openSettings', `@ext:${ExtensionId} pull requests`),
+            ),
+            commands.registerCommand(Commands.ShowPipelineSettings, () =>
+                commands.executeCommand('workbench.action.openSettings', `@ext:${ExtensionId} pipeline`),
+            ),
+            commands.registerCommand(Commands.JiraAPITokenLogin, () => {
+                const useNewAuthFlow = Container.featureFlagClient.checkGate(Features.UseNewAuthFlow);
+                if (useNewAuthFlow) {
+                    runQuickAuth({
+                        initialState: { product: ProductJira, authenticationType: AuthenticationType.ApiToken },
+                        origin: 'nudge',
+                    });
+                } else {
+                    Container.settingsWebviewFactory.createOrShow({
+                        section: ConfigV3Section.Auth,
+                        subSection: ConfigV3SubSection.JiraAuth,
+                        initiateApiTokenAuth: true,
+                    });
+                }
+            }),
+        );
+    } else {
+        vscodeContext.subscriptions.push(
+            commands.registerCommand(Commands.AddJiraSite, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Jira,
+                    subSection: ConfigSubSection.Auth,
+                }),
+            ),
+            commands.registerCommand(Commands.CreateNewJql, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Jira,
+                    subSection: ConfigSubSection.Issues,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowConfigPage, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Jira,
+                    subSection: ConfigSubSection.Auth,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowConfigPageFromExtensionContext, () => {
+                Container.analyticsApi.fireOpenSettingsButtonEvent('extensionContext');
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Jira,
+                    subSection: ConfigSubSection.Auth,
+                });
+            }),
+            commands.registerCommand(Commands.ShowJiraAuth, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Jira,
+                    subSection: ConfigSubSection.Auth,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowBitbucketAuth, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Bitbucket,
+                    subSection: ConfigSubSection.Auth,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowJiraIssueSettings, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Jira,
+                    subSection: ConfigSubSection.Issues,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowPullRequestSettings, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Bitbucket,
+                    subSection: ConfigSubSection.PR,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowPipelineSettings, () =>
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Bitbucket,
+                    subSection: ConfigSubSection.Pipelines,
+                }),
+            ),
+            commands.registerCommand(Commands.ShowExploreSettings, () => {
+                Container.analyticsApi.fireExploreFeaturesButtonEvent(HelpTreeViewId);
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Explore,
+                    subSection: undefined,
+                });
+            }),
+            commands.registerCommand(Commands.JiraAPITokenLogin, () => {
+                const useNewAuthFlow = Container.featureFlagClient.checkGate(Features.UseNewAuthFlow);
+                if (useNewAuthFlow) {
+                    runQuickAuth({
+                        initialState: { product: ProductJira, authenticationType: AuthenticationType.ApiToken },
+                        origin: 'nudge',
+                    });
+                } else {
+                    Container.settingsWebviewFactory.createOrShow({
+                        section: ConfigSection.Jira,
+                        subSection: ConfigSubSection.Auth,
+                        initiateApiTokenAuth: true,
+                    });
+                }
+            }),
+        );
+    }
+}
+
+const buildContext = (editor?: TextEditor, vscodeContext?: ExtensionContext): RovoDevContextItem[] | undefined => {
+    if (!editor || !vscodeContext) {
+        return undefined;
+    }
+
+    const document = editor.document;
+    const workspaceFolder =
+        vscodeContext.workspaceState.get('workspaceFolder') || (vscodeContext as any).workspaceFolder || undefined;
+    const baseName = document.fileName.split(require('path').sep).pop() || '';
+    const fileInfo = {
+        name: baseName,
+        absolutePath: document.uri.fsPath,
+        relativePath: workspaceFolder
+            ? require('path').relative(workspaceFolder.uri.fsPath, document.uri.fsPath)
+            : document.fileName,
+    };
+    const selections = editor.selections && editor.selections.length > 0 ? editor.selections : [editor.selection];
+    return selections.map((selection) => ({
+        contextType: 'file',
+        isFocus: false,
+        file: fileInfo,
+        selection: selection ? { start: selection.start.line, end: selection.end.line } : undefined,
+        enabled: true,
+    }));
+};
+
+export function registerRovoDevCommands(vscodeContext: ExtensionContext) {
+    vscodeContext.subscriptions.push(
+        commands.registerCommand(RovodevCommands.RovodevAskInteractive, async () => {
+            const context = buildContext(window.activeTextEditor, vscodeContext);
+
+            const prompt = await window.showInputBox({
+                placeHolder: 'Type your Rovo Dev command',
+                prompt: 'Send a command to RovoDev for the selected code',
+            });
+
+            if (!prompt?.trim()) {
+                return;
+            }
+            Container.rovodevWebviewProvider.invokeRovoDevAskCommand(prompt, context);
+        }),
+        commands.registerCommand(RovodevCommands.RovodevAsk, (prompt: string, context?: RovoDevContextItem[]) => {
+            Container.rovodevWebviewProvider.invokeRovoDevAskCommand(prompt, context);
+        }),
+        commands.registerCommand(RovodevCommands.RovodevNewSession, () => {
+            Container.rovodevWebviewProvider.executeNewSession();
+        }),
+        commands.registerCommand(RovodevCommands.RovodevShareFeedback, () =>
+            Container.rovodevWebviewProvider.executeTriggerFeedback(),
+        ),
+        commands.registerCommand(RovodevCommands.RovodevAddToContext, async () => {
+            const context = buildContext(window.activeTextEditor, vscodeContext);
+            if (!context || context.length === 0) {
+                // Do nothing, this should only have effect in editor context
+                return;
+            }
+            commands.executeCommand('atlascode.views.rovoDev.webView.focus');
+            context.forEach((item) => {
+                Container.rovodevWebviewProvider.addToContext(item);
+            });
+        }),
+        commands.registerCommand(
+            RovodevCommands.OpenRovoDevConfig,
+            async () => await openRovoDevConfigFile('config.yml'),
+        ),
+        commands.registerCommand(
+            RovodevCommands.OpenRovoDevMcpJson,
+            async () => await openRovoDevConfigFile('mcp.json'),
+        ),
+        commands.registerCommand(
+            RovodevCommands.OpenRovoDevGlobalMemory,
+            async () => await openRovoDevConfigFile('.agent.md'),
+        ),
+        commands.registerCommand(
+            RovodevCommands.OpenRovoDevLogFile,
+            async () => await openRovoDevConfigFile('rovodev.log'),
+        ),
+    );
+}
+
+/**
+ * Commands to help with extension development, only enabled in debug mode
+ */
+export function registerDebugCommands(vscodeContext: ExtensionContext): Disposable {
+    const siteList = process.env.DEBUG_SITE_LIST?.split(',') || [];
+
+    const disposable = Disposable.from(
+        // Trigger arbitrary logic quickly when needed
+        commands.registerCommand(Commands.DebugQuickCommand, async () => {
+            if (!Container.isDebugging) {
+                return;
+            }
+
+            window.showInformationMessage('[DEBUG] Atlascode: Quick command');
+
+            // Add your logic here
+        }),
+
+        // Login to a cloud site with API token
+        commands.registerCommand(Commands.DebugQuickLogin, async () => {
+            if (!Container.isDebugging) {
+                return;
+            }
+
+            if (!process.env.DEBUG_USER_EMAIL || !process.env.DEBUG_USER_API_TOKEN || !siteList.length) {
+                window.showErrorMessage(
+                    'This command requires the following environment variables to be set: DEBUG_USER_EMAIL, DEBUG_USER_API_TOKEN, DEBUG_SITE_LIST',
+                );
+                return;
+            }
+
+            const selection = await window.showQuickPick(siteList, {
+                placeHolder: 'Select a site',
+            });
+
+            if (!selection) {
+                return;
+            }
+
+            Container.loginManager.userInitiatedServerLogin(
+                {
+                    host: selection,
+                    product: ProductJira,
+                },
+                {
+                    username: process.env.DEBUG_USER_EMAIL,
+                    password: process.env.DEBUG_USER_API_TOKEN,
+                } as BasicAuthInfo,
+            );
+        }),
+
+        // Log out of a cloud site
+        commands.registerCommand(Commands.DebugQuickLogout, async () => {
+            if (!Container.isDebugging) {
+                return;
+            }
+
+            if (!process.env.DEBUG_USER_EMAIL || !process.env.DEBUG_USER_API_TOKEN || !siteList.length) {
+                window.showErrorMessage(
+                    'This command requires the following environment variables to be set: DEBUG_USER_EMAIL, DEBUG_USER_API_TOKEN, DEBUG_SITE_LIST',
+                );
+                return;
+            }
+
+            const selection = await window.showQuickPick(siteList, {
+                placeHolder: 'Select a site',
+            });
+            if (!selection) {
+                return;
+            }
+
+            const info = Container.siteManager?.getSiteForHostname(ProductJira, selection);
+            if (info) {
+                await Container.clientManager.removeClient(info);
+                await Container.siteManager.removeSite(info);
+            }
+        }),
+    );
+    vscodeContext.subscriptions.push(disposable);
+
+    return disposable;
 }

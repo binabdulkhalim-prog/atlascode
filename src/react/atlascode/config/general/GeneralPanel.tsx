@@ -1,4 +1,5 @@
-import { Box, Fade, Grid, makeStyles, Theme, Typography } from '@material-ui/core';
+import { Box, Fade, Grid, Theme, Typography } from '@mui/material';
+import { makeStyles } from '@mui/styles';
 import React from 'react';
 
 import { ConfigSubSection } from '../../../../lib/ipc/models/config';
@@ -10,6 +11,7 @@ import { GenMiscPanel } from './subpanels/GenMiscPanel';
 type GeneralPanelProps = CommonPanelProps & {
     config: { [key: string]: any };
     onSubsectionChange: (subSection: ConfigSubSection, expanded: boolean) => void;
+    machineId?: string;
 };
 
 const useStyles = makeStyles(
@@ -27,13 +29,14 @@ export const GeneralPanel: React.FunctionComponent<GeneralPanelProps> = ({
     selectedSubSections,
     onSubsectionChange,
     config,
+    machineId,
 }) => {
     const classes = useStyles();
 
     return (
         <>
             <Fade in={visible}>
-                <div hidden={!visible || !config['bitbucket.enabled']} role="tabpanel">
+                <div hidden={!visible} role="tabpanel">
                     <Grid container spacing={3} direction="column">
                         <Grid item>
                             <GenMiscPanel
@@ -51,8 +54,6 @@ export const GeneralPanel: React.FunctionComponent<GeneralPanelProps> = ({
                                 expanded={selectedSubSections.includes(ConfigSubSection.Misc)}
                                 onSubsectionChange={onSubsectionChange}
                                 enableHttpsTunnel={config['enableHttpsTunnel']}
-                                offlineMode={config['offlineMode']}
-                                onlineCheckerUrls={config['onlineCheckerUrls']}
                             />
                         </Grid>
                         <Grid item>
@@ -79,6 +80,11 @@ export const GeneralPanel: React.FunctionComponent<GeneralPanelProps> = ({
                                     If you don't wish to send usage data to Atlassian, you can set the
                                     telemetry.enableTelemetry user setting to false, and restart VS Code.
                                 </Typography>
+                                {machineId && (
+                                    <Typography variant="subtitle1" className={classes.root}>
+                                        VSCode unique ID: {machineId}
+                                    </Typography>
+                                )}
                             </Box>
                         </Grid>
                         <Grid item></Grid>

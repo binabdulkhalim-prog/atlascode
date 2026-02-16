@@ -10,12 +10,14 @@ __tests__/
 e2e/
 .npm/
 
+# Don't package anything from here specifically:
+resources/rovo-dev/
+
 .env
 .env.example
 .nvmrc
 .prettierignore
 CODEOWNERS
-HOMEPAGE.md
 changelog.md
 nightlyver.sh
 package.json
@@ -44,6 +46,7 @@ bitbucket-pipelines.yml
 *.vsix
 *.orig
 node_modules/
+!node_modules/@vscode/codicons/dist/**
 webpack.*
 build/**/*.map
 .readme/

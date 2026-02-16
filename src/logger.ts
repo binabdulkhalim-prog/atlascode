@@ -1,23 +1,28 @@
 import { ConfigurationChangeEvent, Event, ExtensionContext, OutputChannel, window } from 'vscode';
 import { EventEmitter } from 'vscode';
 
+import { ErrorProductArea } from './analyticsTypes';
 import { configuration, OutputLevel } from './config/configuration';
 import { extensionOutputChannelName } from './constants';
-import { Container } from './container';
+import { SentryService } from './sentry';
+import { isDebugging } from './util/isDebugging';
 
-const ConsolePrefix = `[${extensionOutputChannelName}]`;
+function getConsolePrefix(productArea?: string) {
+    return productArea ? `[${extensionOutputChannelName} ${productArea}]` : `[${extensionOutputChannelName}]`;
+}
 
 export type ErrorEvent = {
     error: Error;
     errorMessage?: string;
     capturedBy?: string;
     params?: string[];
+    productArea?: ErrorProductArea;
 };
 
 /** This function must be called from the VERY FIRST FUNCTION that the called invoked from Logger.
  * If not, the function will return the name of a method inside Logger.
  */
-function retrieveCallerName(): string | undefined {
+export function retrieveCallerName(): string | undefined {
     try {
         const stack = new Error().stack;
         if (!stack) {
@@ -47,7 +52,7 @@ export class Logger {
     }
 
     // constructor is private to ensure only a single instance is created
-    private constructor() {}
+    protected constructor() {}
 
     public static get Instance(): Logger {
         return this._instance || (this._instance = new this());
@@ -62,7 +67,7 @@ export class Logger {
         const initializing = configuration.initializing(e);
 
         const section = 'outputLevel';
-        if (initializing && Container.isDebugging) {
+        if (initializing && isDebugging()) {
             this.level = OutputLevel.Debug;
         } else if (initializing || configuration.changed(e, section)) {
             this.level = configuration.get<OutputLevel>(section);
@@ -101,8 +106,8 @@ export class Logger {
             return;
         }
 
-        if (Container.isDebugging) {
-            console.log(this.timestamp, ConsolePrefix, message, ...params);
+        if (isDebugging()) {
+            console.log(this.timestamp, getConsolePrefix(), message, ...params);
         }
 
         if (this.output !== undefined) {
@@ -111,24 +116,61 @@ export class Logger {
     }
 
     public static error(ex: Error, errorMessage?: string, ...params: string[]): void {
+        // `retrieveCallerName` must be called from the VERY FIRST FUNCTION that the called invoked from Logger.
+        // If not, the function will return the name of a method inside Logger.
         const callerName = retrieveCallerName();
-        this.Instance.errorInternal(ex, callerName, errorMessage, ...params);
+        this.Instance.errorInternal(undefined, ex, callerName, errorMessage, ...params);
     }
 
     public error(ex: Error, errorMessage?: string, ...params: string[]): void {
+        // `retrieveCallerName` must be called from the VERY FIRST FUNCTION that the called invoked from Logger.
+        // If not, the function will return the name of a method inside Logger.
         const callerName = retrieveCallerName();
-        this.errorInternal(ex, callerName, errorMessage, ...params);
+        this.errorInternal(undefined, ex, callerName, errorMessage, ...params);
     }
 
-    private errorInternal(ex: Error, capturedBy?: string, errorMessage?: string, ...params: string[]): void {
-        Logger._onError.fire({ error: ex, errorMessage, capturedBy, params });
+    protected static errorInternal(
+        productArea: ErrorProductArea,
+        ex: Error,
+        capturedBy?: string,
+        errorMessage?: string,
+        ...params: string[]
+    ): void {
+        this.Instance.errorInternal(productArea, ex, capturedBy, errorMessage, ...params);
+    }
+
+    protected errorInternal(
+        productArea: ErrorProductArea,
+        ex: Error,
+        capturedBy?: string,
+        errorMessage?: string,
+        ...params: string[]
+    ): void {
+        Logger._onError.fire({ error: ex, errorMessage, capturedBy, params, productArea });
+
+        if (SentryService.getInstance().isInitialized()) {
+            try {
+                SentryService.getInstance().captureException(ex, {
+                    tags: {
+                        productArea: productArea || 'unknown',
+                        capturedBy: capturedBy || 'unknown',
+                    },
+                    extra: {
+                        errorMessage,
+                        params,
+                    },
+                });
+            } catch (err) {
+                console.error('Error reporting to Sentry:', err);
+            }
+        }
 
         if (this.level === OutputLevel.Silent) {
             return;
         }
 
-        if (Container.isDebugging) {
-            console.error(this.timestamp, ConsolePrefix, errorMessage, ...params, ex);
+        if (isDebugging()) {
+            console.error(this.timestamp, getConsolePrefix(productArea), errorMessage, ...params, ex);
         }
 
         if (this.output !== undefined) {
@@ -145,8 +187,8 @@ export class Logger {
             return;
         }
 
-        if (Container.isDebugging) {
-            console.warn(this.timestamp, ConsolePrefix, message, ...params);
+        if (isDebugging()) {
+            console.warn(this.timestamp, getConsolePrefix(), message, ...params);
         }
 
         if (this.output !== undefined) {

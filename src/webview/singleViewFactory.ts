@@ -13,10 +13,9 @@ import {
 import { Container } from '../container';
 import { AnalyticsApi } from '../lib/analyticsApi';
 import { CommonActionType } from '../lib/ipc/fromUI/common';
-import { CommonMessageType } from '../lib/ipc/toUI/common';
+import { AdditionalSettings, CommonMessageType } from '../lib/ipc/toUI/common';
 import { WebviewController } from '../lib/webview/controller/webviewController';
-import { FeatureFlagClient } from '../util/featureFlags';
-import { ExperimentGateValues, Experiments, FeatureGateValues, Features } from '../util/featureFlags/features';
+import { ExperimentGateValues, Experiments, FeatureGateValues, Features } from '../util/features';
 import { UIWebsocket } from '../ws';
 import { VSCWebviewControllerFactory } from './vscWebviewControllerFactory';
 
@@ -136,17 +135,25 @@ export class SingleWebview<FD, R> implements ReactWebview<FD> {
             this._panel.reveal(column ? column : ViewColumn.Active); // , false);
         }
 
+        // The webview might not be ready at this point; see another usage in `onMessageReceived`
+        this.updateFeatureMetadata();
+    }
+
+    public updateFeatureMetadata() {
         if (this._controller) {
             // Send feature gates to the panel in a message
             this.fireFeatureGates(this._controller.requiredFeatureFlags);
             this.fireExperimentGates(this._controller.requiredExperiments);
+            this.fireAdditionalSettings({
+                rovoDevEnabled: Container.isRovoDevEnabled,
+            });
         }
     }
 
     private async fireFeatureGates(features: Features[]) {
         if (features.length) {
             const featureFlags = {} as FeatureGateValues;
-            features.forEach((x) => (featureFlags[x] = FeatureFlagClient.checkGate(x)));
+            features.forEach((x) => (featureFlags[x] = Container.featureFlagClient.checkGate(x)));
             this.postMessage({ command: CommonMessageType.UpdateFeatureFlags, featureFlags });
         }
     }
@@ -154,9 +161,13 @@ export class SingleWebview<FD, R> implements ReactWebview<FD> {
     private async fireExperimentGates(experiments: Experiments[]) {
         if (experiments.length) {
             const experimentValues = {} as ExperimentGateValues;
-            experiments.forEach((x) => (experimentValues[x] = FeatureFlagClient.checkExperimentValue(x)));
+            experiments.forEach((x) => (experimentValues[x] = Container.featureFlagClient.checkExperimentValue(x)));
             this.postMessage({ command: CommonMessageType.UpdateExperimentValues, experimentValues });
         }
+    }
+
+    protected fireAdditionalSettings(settings: AdditionalSettings) {
+        this.postMessage({ type: CommonMessageType.AdditionalSettings, settings });
     }
 
     private onViewStateChanged(e: WebviewPanelOnDidChangeViewStateEvent) {
@@ -178,6 +189,9 @@ export class SingleWebview<FD, R> implements ReactWebview<FD> {
                     const { site, product } = this._controller.screenDetails();
                     this._analyticsApi.fireViewScreenEvent('atlascodePmfBanner', site, product);
                 }
+
+                // Using `refresh` for webview readiness indication here - update feature flag data when ready
+                this.updateFeatureMetadata();
             }
         }
     }

@@ -15,11 +15,14 @@ import {
 import { CredentialManager } from './atlclients/authStore';
 import { configuration } from './config/configuration';
 import { Container } from './container';
+import { Logger } from './logger';
+import { RovodevStaticConfig } from './rovo-dev/api/rovodevStaticConfig';
 
 export type SitesAvailableUpdateEvent = {
     sites: DetailedSiteInfo[];
     newSites?: DetailedSiteInfo[];
     product: Product;
+    primarySite?: DetailedSiteInfo;
 };
 
 const SitesSuffix: string = 'Sites';
@@ -28,10 +31,45 @@ export class SiteManager extends Disposable {
     private _disposable: Disposable;
     private _sitesAvailable: Map<string, DetailedSiteInfo[]>;
     private _globalStore: Memento;
+    private _primarySite: DetailedSiteInfo | undefined;
 
     private _onDidSitesAvailableChange = new EventEmitter<SitesAvailableUpdateEvent>();
     public get onDidSitesAvailableChange(): Event<SitesAvailableUpdateEvent> {
         return this._onDidSitesAvailableChange.event;
+    }
+
+    public get primarySite(): DetailedSiteInfo | undefined {
+        return this._primarySite;
+    }
+
+    /**
+     * Fallback logic to resolve a primary tenant for feature flag purposes
+     */
+    private resolvePrimarySite(): DetailedSiteInfo | undefined {
+        const allSites = this.readSitesFromGlobalStore(ProductJira.key);
+        const cloudSites = allSites?.filter((site) => site.isCloud);
+
+        if (!cloudSites || cloudSites.length === 0) {
+            // Only cloud sites can be set as primary
+            Logger.debug(`Primary site: ${this._primarySite?.name} -> undefined`);
+            this._primarySite = undefined;
+            return;
+        }
+
+        // let's force using hello if present in the list
+        const helloSite = cloudSites.find((x) => x.name === 'hello');
+
+        // Use the first available cloud site, sorted by name
+        const newValue = helloSite || cloudSites.sort((a, b) => a.name.localeCompare(b.name))[0];
+        if (newValue.id === this._primarySite?.id) {
+            // no change
+            return this._primarySite;
+        }
+
+        Logger.debug(`Primary site: ${this._primarySite?.name} -> ${newValue?.name}`);
+        this._primarySite = newValue;
+
+        return newValue;
     }
 
     constructor(globalStore: Memento) {
@@ -41,26 +79,38 @@ export class SiteManager extends Disposable {
         this._sitesAvailable = new Map<string, DetailedSiteInfo[]>();
         this._sitesAvailable.set(ProductJira.key, []);
         this._sitesAvailable.set(ProductBitbucket.key, []);
+        this.resolvePrimarySite();
 
         this._disposable = Disposable.from(Container.credentialManager.onDidAuthChange(this.onDidAuthChange, this));
     }
 
-    dispose() {
+    override dispose() {
         this._disposable.dispose();
         this._onDidSitesAvailableChange.dispose();
     }
 
-    public addOrUpdateSite(newSite: DetailedSiteInfo) {
+    public async addOrUpdateSite(newSite: DetailedSiteInfo) {
         const allSites = this.readSitesFromGlobalStore(newSite.product.key);
         const oldSite = allSites?.find((site) => site.id === newSite.id && site.userId === newSite.userId);
         if (oldSite) {
             this.updateSite(oldSite, newSite);
         } else {
-            this.addSites([newSite]);
+            await this.addSites([newSite]);
         }
     }
 
-    public addSites(newSites: DetailedSiteInfo[]) {
+    async getSitesWithApiToken() {
+        const promises = await Promise.all(
+            this.getSitesAvailable(ProductJira).map(async (site) => ({
+                token: await Container.credentialManager.getApiTokenIfExists(site),
+                site: site,
+            })),
+        );
+
+        return promises.filter((s) => s.token !== undefined).map((s) => s.site);
+    }
+
+    public async addSites(newSites: DetailedSiteInfo[]) {
         if (newSites.length === 0) {
             return;
         }
@@ -68,10 +118,16 @@ export class SiteManager extends Disposable {
         const productKey = newSites[0].product.key;
         let notify = true;
         let allSites = this.readSitesFromGlobalStore(productKey);
+
+        // Generally, we overwrite credentialId on cloud sites to prevent
+        // several instances of OAuth credentials from existing at once.
+        // However, we must NOT mix cloud API token credentials with OAuth credentials
+        const cloudCredentialIdsToKeep = new Set((await this.getSitesWithApiToken()).map((s) => s.credentialId));
+
         if (allSites) {
             // Ensure all cloud sites use the per account credential ID
             allSites.forEach((site) => {
-                if (site.isCloud) {
+                if (site.isCloud && !cloudCredentialIdsToKeep.has(site.credentialId)) {
                     site.credentialId = CredentialManager.generateCredentialId(site.product.key, site.userId);
                 }
             });
@@ -80,20 +136,24 @@ export class SiteManager extends Disposable {
             if (newSites.length === 0) {
                 notify = false;
             }
-            allSites = allSites.concat(newSites);
+            allSites.push(...newSites);
         } else {
             allSites = newSites;
         }
 
         this._globalStore.update(`${productKey}${SitesSuffix}`, allSites);
         this._sitesAvailable.set(productKey, allSites);
+        this.resolvePrimarySite();
 
         if (notify) {
-            this._onDidSitesAvailableChange.fire({
+            const event = {
                 sites: allSites,
                 newSites: newSites,
                 product: allSites[0].product,
-            });
+                primarySite: this._primarySite,
+            };
+
+            this._onDidSitesAvailableChange.fire(event);
         }
     }
 
@@ -106,7 +166,15 @@ export class SiteManager extends Disposable {
 
                 this._globalStore.update(`${newSite.product.key}${SitesSuffix}`, allSites);
                 this._sitesAvailable.set(newSite.product.key, allSites);
-                this._onDidSitesAvailableChange.fire({ sites: [newSite], product: newSite.product });
+                this.resolvePrimarySite();
+
+                const event = {
+                    sites: [newSite],
+                    product: newSite.product,
+                    primarySite: this._primarySite,
+                };
+
+                this._onDidSitesAvailableChange.fire(event);
             }
         }
     }
@@ -114,18 +182,30 @@ export class SiteManager extends Disposable {
     onDidAuthChange(e: AuthInfoEvent) {
         if (isRemoveAuthEvent(e)) {
             const deadSites = this.getSitesAvailable(e.product).filter((site) => site.credentialId === e.credentialId);
-            deadSites.forEach((s) => this.removeSite(s));
+
             if (deadSites.length > 0) {
-                this._onDidSitesAvailableChange.fire({
-                    sites: this.getSitesAvailable(e.product),
-                    product: e.product,
-                });
+                this.handleSiteRemoval(deadSites, e.product);
             }
         } else if (isUpdateAuthEvent(e)) {
             this._onDidSitesAvailableChange.fire({
                 sites: this.getSitesAvailable(e.site.product),
                 product: e.site.product,
+                primarySite: this._primarySite,
             });
+        }
+    }
+
+    private async handleSiteRemoval(deadSites: DetailedSiteInfo[], product: Product): Promise<void> {
+        try {
+            const removalPromises = deadSites.map(async (s) => await this.removeSite(s, false, false));
+            await Promise.all(removalPromises);
+            this._onDidSitesAvailableChange.fire({
+                sites: this.getSitesAvailable(product),
+                product,
+                primarySite: this._primarySite,
+            });
+        } catch (error) {
+            Logger.error(error, 'Error during async site removal');
         }
     }
 
@@ -174,6 +254,9 @@ export class SiteManager extends Disposable {
     }
 
     public getFirstAAID(productKey?: string): string | undefined {
+        if (RovodevStaticConfig.isBBY && RovodevStaticConfig.bbyUserIdOverride) {
+            return RovodevStaticConfig.bbyUserIdOverride;
+        }
         if (productKey) {
             return this.getFirstAAIDForProduct(productKey);
         }
@@ -247,7 +330,7 @@ export class SiteManager extends Disposable {
         return this.getSitesAvailable(product).find((site) => site.id === id);
     }
 
-    public removeSite(site: SiteInfo): boolean {
+    public async removeSite(site: SiteInfo, removeCredentials = true, fireEvent = true): Promise<boolean> {
         const sites = this.readSitesFromGlobalStore(site.product.key);
         if (sites && sites.length > 0) {
             const foundIndex = sites.findIndex((availableSite) => availableSite.host === site.host);
@@ -256,10 +339,20 @@ export class SiteManager extends Disposable {
                 sites.splice(foundIndex, 1);
                 this._globalStore.update(`${site.product.key}${SitesSuffix}`, sites);
                 this._sitesAvailable.set(site.product.key, sites);
-                this._onDidSitesAvailableChange.fire({ sites: sites, product: site.product });
-                Container.credentialManager.removeAuthInfo(deletedSite);
+                this.resolvePrimarySite();
 
-                if (deletedSite.id === Container.config.jira.lastCreateSiteAndProject.siteId) {
+                if (removeCredentials) {
+                    await Container.credentialManager.removeAuthInfo(deletedSite);
+                }
+                if (fireEvent) {
+                    this._onDidSitesAvailableChange.fire({
+                        sites: sites,
+                        product: site.product,
+                        primarySite: this._primarySite,
+                    });
+                }
+
+                if (deletedSite.id === Container.config.jira.lastCreatePreSelectedValues.siteId) {
                     configuration.setLastCreateSiteAndProject(undefined);
                 }
 
@@ -268,5 +361,9 @@ export class SiteManager extends Disposable {
         }
 
         return false;
+    }
+
+    public fireSitesAvailableChangeEvent(event: SitesAvailableUpdateEvent): void {
+        this._onDidSitesAvailableChange.fire(event);
     }
 }

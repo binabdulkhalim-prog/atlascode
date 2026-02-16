@@ -1,4 +1,4 @@
-import { Fade, Grid } from '@material-ui/core';
+import { Fade, Grid } from '@mui/material';
 import React from 'react';
 
 import { ProductBitbucket } from '../../../../atlclients/authInfo';
@@ -16,6 +16,7 @@ type BitbucketPanelProps = CommonPanelProps & {
     config: { [key: string]: any };
     sites: SiteWithAuthInfo[];
     isRemote: boolean;
+    initiateBitbucketApiTokenAuth: boolean;
     onSubsectionChange: (subSection: ConfigSubSection, expanded: boolean) => void;
 };
 
@@ -26,6 +27,7 @@ export const BitbucketPanel: React.FunctionComponent<BitbucketPanelProps> = ({
     config,
     sites,
     isRemote,
+    initiateBitbucketApiTokenAuth,
 }) => {
     return (
         <>
@@ -45,6 +47,7 @@ export const BitbucketPanel: React.FunctionComponent<BitbucketPanelProps> = ({
                                 sites={sites}
                                 product={ProductBitbucket}
                                 section={ConfigSection.Bitbucket}
+                                initiateApiTokenAuth={initiateBitbucketApiTokenAuth}
                             />
                         </Grid>
                         <Grid item>
@@ -55,9 +58,6 @@ export const BitbucketPanel: React.FunctionComponent<BitbucketPanelProps> = ({
                                 enabled={config[`${ConfigSection.Bitbucket}.explorer.enabled`]}
                                 relatedJiraIssues={
                                     config[`${ConfigSection.Bitbucket}.explorer.relatedJiraIssues.enabled`]
-                                }
-                                relatedBitbucketIssues={
-                                    config[`${ConfigSection.Bitbucket}.explorer.relatedBitbucketIssues.enabled`]
                                 }
                                 pullRequestCreated={
                                     config[`${ConfigSection.Bitbucket}.explorer.notifications.pullRequestCreated`]

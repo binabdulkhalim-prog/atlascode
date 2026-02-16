@@ -1,10 +1,9 @@
 import Button from '@atlaskit/button';
-import AddIcon from '@atlaskit/icon/glyph/add';
-import Select from '@atlaskit/select';
-import { components } from '@atlaskit/select';
+import AddIcon from '@atlaskit/icon/core/add';
+import Select, { components } from '@atlaskit/select';
 import TextField from '@atlaskit/textfield';
 import { emptyIssueType, IssueType, MinimalIssueOrKeyAndSite } from '@atlassianlabs/jira-pi-common-models';
-import { Box } from '@material-ui/core';
+import { Box } from '@mui/material';
 import { VSCodeButton } from '@vscode/webview-ui-toolkit/react';
 import React from 'react';
 
@@ -16,13 +15,17 @@ export type SummaryAndIssueType = {
     issuetype: { id: string };
 };
 type Props = {
-    subtaskTypes: IssueType[];
+    childTypes: IssueType[];
     label: string;
     onSave: (val: SummaryAndIssueType) => void;
     loading: boolean;
-    enableSubtasks: { enable: boolean; setEnableSubtasks: (enable: boolean) => void };
+    enable: boolean;
+    setEnableSubtasks: (enable: boolean) => void;
+    setEnableEpicChildren: (enable: boolean) => void;
     handleOpenIssue: (issueOrKey: MinimalIssueOrKeyAndSite<DetailedSiteInfo>) => void;
     issues: any[];
+    isEpic: boolean;
+    onStatusChange?: (issueKey: string, statusName: string) => void;
 };
 
 const { Option, SingleValue } = components;
@@ -45,20 +48,23 @@ const IconValue = (props: any) => (
 );
 
 export const ChildIssuesComponent: React.FC<Props> = ({
-    subtaskTypes,
+    childTypes,
     label,
     onSave,
     loading,
-    enableSubtasks,
+    enable,
+    setEnableSubtasks,
+    setEnableEpicChildren,
     handleOpenIssue,
     issues,
+    isEpic,
+    onStatusChange,
 }) => {
     const [isEditing, setIsEditing] = React.useState(false);
     const [inputValue, setInputValue] = React.useState('');
     const [selectedIssueType, setSelectedIssueType] = React.useState<IssueType>(
-        subtaskTypes.length > 0 ? subtaskTypes[0] : emptyIssueType,
+        childTypes.length > 0 ? childTypes[0] : emptyIssueType,
     );
-    const { enable, setEnableSubtasks } = enableSubtasks;
     React.useEffect(() => {
         if (enable) {
             setIsEditing(true);
@@ -77,8 +83,12 @@ export const ChildIssuesComponent: React.FC<Props> = ({
     const handleCancel = () => {
         setInputValue('');
         setIsEditing(false);
-        setSelectedIssueType(subtaskTypes.length > 0 ? subtaskTypes[0] : emptyIssueType);
-        setEnableSubtasks(false);
+        setSelectedIssueType(childTypes.length > 0 ? childTypes[0] : emptyIssueType);
+        if (isEpic) {
+            setEnableEpicChildren(false);
+        } else {
+            setEnableSubtasks(false);
+        }
     };
     return (
         <Box>
@@ -101,7 +111,7 @@ export const ChildIssuesComponent: React.FC<Props> = ({
                             <Select
                                 className="ac-select-container"
                                 classNamePrefix="ac-select"
-                                options={subtaskTypes}
+                                options={childTypes}
                                 defaultValue={selectedIssueType}
                                 components={{ Option: IconOption, SingleValue: IconValue }}
                                 getOptionLabel={(option: IssueType) => option.name}
@@ -128,7 +138,7 @@ export const ChildIssuesComponent: React.FC<Props> = ({
                     </Box>
                 </Box>
             )}
-            <IssueList onIssueClick={handleOpenIssue} issues={issues} />
+            <IssueList onIssueClick={handleOpenIssue} issues={issues} onStatusChange={onStatusChange} />
         </Box>
     );
 };

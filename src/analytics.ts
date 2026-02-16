@@ -1,11 +1,28 @@
 import { Uri } from 'vscode';
 
 import { ScreenEvent, TrackEvent, UIEvent } from './analytics-node-client/src/types';
-import { CreatePrTerminalSelection, UIErrorInfo } from './analyticsTypes';
-import { DetailedSiteInfo, isEmptySiteInfo, Product, ProductJira, SiteInfo } from './atlclients/authInfo';
+import {
+    CreateIssueSource,
+    CreatePrTerminalSelection,
+    ErrorProductArea,
+    FeedbackSentEvent,
+    UIErrorInfo,
+} from './analyticsTypes';
+import {
+    DetailedSiteInfo,
+    isEmptySiteInfo,
+    Product,
+    ProductBitbucket,
+    ProductJira,
+    SiteInfo,
+} from './atlclients/authInfo';
+import { IssueSuggestionSettings } from './config/configuration';
 import { BitbucketIssuesTreeViewId, PullRequestTreeViewId } from './constants';
 import { Container } from './container';
+import { QuickFlowAnalyticsEvent } from './onboarding/quickFlow/types';
+import { RovoDevCommonParams, RovodevPerformanceTag } from './rovo-dev/analytics/events';
 import { NotificationSurface, NotificationType } from './views/notifications/notificationManager';
+import { NotificationSource } from './views/notifications/notificationSources';
 
 // IMPORTANT
 // Make sure there is a corresponding event with the correct attributes in the Data Portal for any event created here.
@@ -54,19 +71,27 @@ export async function upgradedEvent(version: string, previousVersion: string): P
 
 export async function launchedEvent(
     location: string,
+    ideUriScheme: string,
     numJiraCloudAuthed: number,
     numJiraDcAuthed: number,
     numBitbucketCloudAuthed: number,
     numBitbucketDcAuthed: number,
+    isJiraEnabled: boolean,
+    isBitbucketEnabled: boolean,
+    isRovoDevEnabled: boolean,
 ): Promise<TrackEvent> {
     return trackEvent('launched', 'atlascode', {
         attributes: {
             machineId: Container.machineId,
             extensionLocation: location,
-            numJiraCloudAuthed: numJiraCloudAuthed,
-            numJiraDcAuthed: numJiraDcAuthed,
-            numBitbucketCloudAuthed: numBitbucketCloudAuthed,
-            numBitbucketDcAuthed: numBitbucketDcAuthed,
+            ideUriScheme,
+            numJiraCloudAuthed,
+            numJiraDcAuthed,
+            numBitbucketCloudAuthed,
+            numBitbucketDcAuthed,
+            isJiraEnabled,
+            isBitbucketEnabled,
+            isRovoDevEnabled,
         },
     });
 }
@@ -87,6 +112,17 @@ export async function authenticatedEvent(
             hostProduct: site.product.name,
             onboarding: isOnboarding,
             authSource: source,
+        },
+    });
+}
+
+export async function aiInstallCompletedEvent(site: DetailedSiteInfo): Promise<TrackEvent> {
+    return instanceTrackEvent(site, 'completed', 'aiInstall', {
+        attributes: {
+            targetProduct: 'rovodev',
+            productStage: 'onboarding',
+            onboardingStep: 'install',
+            xid: 'rovodev-ide-vscode',
         },
     });
 }
@@ -115,24 +151,31 @@ function sanitazeErrorMessage(message?: string): string | undefined {
 
 function sanitizeStackTrace(stack?: string): string | undefined {
     if (stack) {
-        stack = stack.replace(/\/Users\/[^/]+\//g, '/Users/<user>/');
+        stack = stack.replace(/\/Users\/[^/]+\//gi, '/Users/<user>/'); // *nix Users folder
+        stack = stack.replace(/\/home\/[^/]+\//gi, '/home/<user>/'); // *nix home folder
+        stack = stack.replace(/\\Users\\[^\\]+\\/gi, '\\Users\\<user>\\'); // windows Users folder
     }
     return stack || undefined;
 }
 
+interface ErrorEventPayload {
+    productArea: ErrorProductArea;
+    name: string;
+    message?: string;
+    capturedBy?: string;
+    stack?: string;
+    additionalParams?: string;
+}
+
 export async function errorEvent(
+    productArea: ErrorProductArea,
     errorMessage: string,
     error?: Error,
     capturedBy?: string,
     additionalParams?: string,
 ): Promise<TrackEvent> {
-    const attributes: {
-        name: string;
-        message?: string;
-        capturedBy?: string;
-        stack?: string;
-        additionalParams?: string;
-    } = {
+    const attributes: ErrorEventPayload = {
+        productArea,
         message: sanitazeErrorMessage(errorMessage),
         name: error?.name || 'Error',
         capturedBy,
@@ -168,27 +211,43 @@ export async function featureFlagClientInitializedEvent(
     });
 }
 
-// debugging event, meant to measure the exposure rate of a feature flag or an experiment
-export async function featureGateExposureBoolEvent(
-    ffName: string,
-    success: boolean,
-    value: boolean,
-    errorType: number,
-): Promise<TrackEvent> {
-    return trackEvent('gateExposureBool', 'featureFlagClient', {
-        attributes: { ffName, success, value, errorType },
+// Perf events
+
+// perf events name are constructed in the format:
+// <ui|core|api> . <product> . <action> . <subAction> . <perf-marker>
+
+type JiraPerfEvents =
+    | 'ui.jira.jqlFetch.render.lcp'
+    | 'ui.jira.jqlFetch.update.lcp'
+    | 'ui.jira.createJiraIssue.render.lcp'
+    | 'ui.jira.editJiraIssue.render.lcp'
+    | 'ui.jira.editJiraIssue.update.lcp';
+
+interface JiraIssueTypeParams {
+    isEpic: boolean;
+}
+
+export function performanceEvent(
+    tag: RovodevPerformanceTag,
+    measure: number,
+    params: RovoDevCommonParams,
+): Promise<TrackEvent>;
+export async function performanceEvent(
+    tag: JiraPerfEvents,
+    measure: number,
+    params?: JiraIssueTypeParams,
+): Promise<TrackEvent>;
+export function performanceEvent(tag: string, measure: number, params?: Record<string, any>): Promise<TrackEvent> {
+    return trackEvent('performanceEvent', 'atlascode', {
+        attributes: { tag, measure, ...(params || {}) },
     });
 }
 
-// debugging event, meant to measure the exposure rate of a feature flag or an experiment
-export async function featureGateExposureStringEvent(
-    ffName: string,
-    success: boolean,
-    value: string,
-    errorType: number,
-): Promise<TrackEvent> {
-    return trackEvent('gateExposureString', 'featureFlagClient', {
-        attributes: { ffName, success, value, errorType },
+// Rovo Dev events
+
+export function rovoDevEntitlementCheckEvent(isEntitled: boolean, type: string, source?: string) {
+    return trackEvent('rovoDevEntitlement', 'atlascode', {
+        attributes: { source, isEntitled, type },
     });
 }
 
@@ -226,6 +285,10 @@ export async function issueWorkStartedEvent(
     return instanceTrackEvent(site, 'workStarted', 'issue', attributesObject);
 }
 
+export async function issueStartWorkErrorEvent(error: { message: string; stack?: string }): Promise<TrackEvent> {
+    return trackEvent('failed', 'startWork', { attributes: { error } });
+}
+
 export async function issueUpdatedEvent(
     site: DetailedSiteInfo,
     issueKey: string,
@@ -238,7 +301,7 @@ export async function issueUpdatedEvent(
     });
 }
 
-export async function startIssueCreationEvent(source: string, product: Product): Promise<TrackEvent> {
+export async function startIssueCreationEvent(source: CreateIssueSource, product: Product): Promise<TrackEvent> {
     return trackEvent('createFromSource', 'issue', { attributes: { source: source, hostProduct: product.name } });
 }
 
@@ -246,14 +309,35 @@ export async function searchIssuesEvent(product: Product): Promise<TrackEvent> {
     return trackEvent('searchIssues', 'issue', { attributes: { hostProduct: product.name } });
 }
 
+export async function issueOpenRovoDevEvent(site: DetailedSiteInfo, source?: string): Promise<TrackEvent> {
+    const isEntitled = (await Container.rovoDevEntitlementChecker.checkEntitlement()).isEntitled;
+    return instanceTrackEvent(site, 'openRovoDev', 'issue', {
+        attributes: { issueSource: source || '', isEntitled: isEntitled },
+    });
+}
+
+export async function rovoDevPromoBannerDismissedEvent(site: DetailedSiteInfo, source?: string): Promise<TrackEvent> {
+    return instanceTrackEvent(site, 'dismissed', 'rovoDevPromoBanner', {
+        attributes: { source: source || '' },
+    });
+}
+
+export async function rovoDevPromoBannerOpenedEvent(site: DetailedSiteInfo, source?: string): Promise<TrackEvent> {
+    return instanceTrackEvent(site, 'opened', 'rovoDevPromoBanner', {
+        attributes: { source: source || '' },
+    });
+}
+
 export async function notificationChangeEvent(
-    uri: Uri,
+    source: NotificationSource,
+    uri: Uri | undefined,
     notificationSurface: NotificationSurface,
     delta: number,
 ): Promise<TrackEvent> {
     return trackEvent('changed', 'notification', {
         attributes: {
-            uri: uri.toString(),
+            source,
+            uri: uri?.toString(),
             notificationSurface: notificationSurface,
             delta: delta,
         },
@@ -328,6 +412,12 @@ export async function pmfClosed(): Promise<TrackEvent> {
     return trackEvent('closed', 'atlascodePmf');
 }
 
+export async function addRecommendedExtensionTriggeredEvent(source: string): Promise<TrackEvent> {
+    return trackEvent('triggered', 'addRecommendedExtension', {
+        attributes: { source: source },
+    });
+}
+
 export type DeepLinkEventErrorType = 'Success' | 'NotFound' | 'Exception';
 
 export async function deepLinkEvent(
@@ -370,10 +460,42 @@ export async function viewScreenEvent(
 
     const tenantId: string | undefined = site ? site.id : undefined;
 
-    return anyUserOrAnonymous<ScreenEvent>(tenantOrNull<ScreenEvent>(e, tenantId));
+    return appendUserInfo<ScreenEvent>(tenantOrNull<ScreenEvent>(e, tenantId));
 }
 
 // UI Events
+
+export async function feedbackSentEvent(event: FeedbackSentEvent): Promise<TrackEvent> {
+    return trackEvent('feedbackSent', 'atlascode', { attributes: { ...event } });
+}
+
+export async function issueSuggestionGeneratedEvent(): Promise<TrackEvent> {
+    return trackEvent('generated', 'issueSuggestion');
+}
+
+export async function issueSuggestionFailedEvent(error: string): Promise<TrackEvent> {
+    return trackEvent('failed', 'issueSuggestion', { attributes: { error } });
+}
+
+export async function sentryCapturedExceptionFailedEvent(error: string): Promise<TrackEvent> {
+    return trackEvent('failed', 'captureException', { attributes: { error } });
+}
+
+export async function issueSuggestionSettingsChangeEvent(settings: IssueSuggestionSettings): Promise<TrackEvent> {
+    return trackEvent('changed', 'issueSuggestionSettings', { attributes: { ...settings } });
+}
+
+export async function apiTokenNudgeClickedEvent(source: string): Promise<TrackEvent> {
+    return trackEvent('clicked', 'apiTokenNudge', { attributes: { source } });
+}
+
+export async function apiTokenRetainedEvent() {
+    return trackEvent('retained', 'apiToken');
+}
+
+export async function quickFlowEvent(event: QuickFlowAnalyticsEvent): Promise<TrackEvent> {
+    return trackEvent('statusUpdated', 'quickFlow', { attributes: { ...event } });
+}
 
 export async function uiErrorEvent(errorInfo: UIErrorInfo): Promise<TrackEvent> {
     const e = trackEvent('failedTest', 'ui', {
@@ -398,7 +520,7 @@ export async function bbIssuesPaginationEvent(): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function prPaginationEvent(): Promise<UIEvent> {
@@ -417,7 +539,7 @@ export async function prPaginationEvent(): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function moreSettingsButtonEvent(source: string): Promise<UIEvent> {
@@ -433,7 +555,7 @@ export async function moreSettingsButtonEvent(source: string): Promise<UIEvent> 
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function focusCreateIssueEvent(source: string): Promise<UIEvent> {
@@ -449,7 +571,7 @@ export async function focusCreateIssueEvent(source: string): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function focusIssueEvent(source: string): Promise<UIEvent> {
@@ -465,7 +587,7 @@ export async function focusIssueEvent(source: string): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 export async function focusCreatePullRequestEvent(source: string): Promise<UIEvent> {
     const e = {
@@ -480,7 +602,7 @@ export async function focusCreatePullRequestEvent(source: string): Promise<UIEve
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 export async function focusPullRequestEvent(source: string): Promise<UIEvent> {
     const e = {
@@ -495,7 +617,7 @@ export async function focusPullRequestEvent(source: string): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 export async function doneButtonEvent(source: string): Promise<UIEvent> {
     const e = {
@@ -510,7 +632,7 @@ export async function doneButtonEvent(source: string): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function authenticateButtonEvent(
@@ -540,7 +662,7 @@ export async function authenticateButtonEvent(
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function editButtonEvent(source: string): Promise<UIEvent> {
@@ -556,7 +678,7 @@ export async function editButtonEvent(source: string): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function logoutButtonEvent(source: string): Promise<UIEvent> {
@@ -572,7 +694,7 @@ export async function logoutButtonEvent(source: string): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function saveManualCodeEvent(source: string): Promise<UIEvent> {
@@ -588,7 +710,7 @@ export async function saveManualCodeEvent(source: string): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function configureJQLButtonEvent(source: string): Promise<UIEvent> {
@@ -604,7 +726,7 @@ export async function configureJQLButtonEvent(source: string): Promise<UIEvent> 
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function openSettingsButtonEvent(source: string): Promise<UIEvent> {
@@ -620,7 +742,7 @@ export async function openSettingsButtonEvent(source: string): Promise<UIEvent> 
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function exploreFeaturesButtonEvent(source: string): Promise<UIEvent> {
@@ -636,7 +758,7 @@ export async function exploreFeaturesButtonEvent(source: string): Promise<UIEven
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function openWorkbenchRepositoryButtonEvent(source: string): Promise<UIEvent> {
@@ -652,7 +774,7 @@ export async function openWorkbenchRepositoryButtonEvent(source: string): Promis
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function openWorkbenchWorkspaceButtonEvent(source: string): Promise<UIEvent> {
@@ -668,7 +790,7 @@ export async function openWorkbenchWorkspaceButtonEvent(source: string): Promise
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function cloneRepositoryButtonEvent(source: string): Promise<UIEvent> {
@@ -684,7 +806,7 @@ export async function cloneRepositoryButtonEvent(source: string): Promise<UIEven
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function openActiveIssueEvent(): Promise<UIEvent> {
@@ -700,7 +822,26 @@ export async function openActiveIssueEvent(): Promise<UIEvent> {
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
+}
+
+export async function notificationBannerClickedEvent(source: string, buttonType: string): Promise<UIEvent> {
+    const e = {
+        tenantIdType: null,
+        uiEvent: {
+            origin: 'desktop',
+            platform: AnalyticsPlatform.for(process.platform),
+            action: 'clicked',
+            actionSubject: 'button',
+            actionSubjectId: 'notificationBanner',
+            source,
+            attributes: {
+                buttonType,
+            },
+        },
+    };
+
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function createPrTerminalLinkPanelButtonClickedEvent(
@@ -722,7 +863,7 @@ export async function createPrTerminalLinkPanelButtonClickedEvent(
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 
 export async function notificationActionButtonClickedEvent(
@@ -747,7 +888,7 @@ export async function notificationActionButtonClickedEvent(
         },
     };
 
-    return anyUserOrAnonymous<UIEvent>(e);
+    return appendUserInfo<UIEvent>(e);
 }
 // Helper methods
 
@@ -765,13 +906,13 @@ async function instanceTrackEvent(
     return event;
 }
 
-async function trackEvent(action: string, actionSubject: string, eventProps: any = {}): Promise<TrackEvent> {
+export async function trackEvent(action: string, actionSubject: string, eventProps: any = {}): Promise<TrackEvent> {
     const e = {
         tenantIdType: null,
         trackEvent: event(action, actionSubject, eventProps),
     };
 
-    return anyUserOrAnonymous<TrackEvent>(e);
+    return appendUserInfo<TrackEvent>(e);
 }
 
 async function tenantTrackEvent(
@@ -786,7 +927,7 @@ async function tenantTrackEvent(
         trackEvent: event(action, actionSubject, eventProps),
     };
 
-    return anyUserOrAnonymous<TrackEvent>(e);
+    return appendUserInfo<TrackEvent>(e);
 }
 
 function event(action: string, actionSubject: string, attributes: any): any {
@@ -800,14 +941,52 @@ function event(action: string, actionSubject: string, attributes: any): any {
     return Object.assign(event, attributes);
 }
 
-function anyUserOrAnonymous<T>(e: Object): T {
+async function checkUserDomain(): Promise<string> {
+    // Try to get user email from Jira first, then Bitbucket
+    const jiraSites = Container.siteManager?.getSitesAvailable(ProductJira) || [];
+    const bitbucketSites = Container.siteManager?.getSitesAvailable(ProductBitbucket) || [];
+
+    const allSites = [...jiraSites, ...bitbucketSites];
+
+    // If all sites is zero, return unknown
+    if (allSites.length === 0) {
+        return 'unknown';
+    }
+
+    return (await Container.isAtlassianUser(ProductJira, ProductBitbucket)) ? 'atlassian' : 'not-atlassian';
+}
+
+async function appendUserInfo<T>(e: Object): Promise<T> {
     let newObj: Object;
     const aaid = Container.siteManager?.getFirstAAID();
 
     if (aaid) {
-        newObj = { ...e, ...{ userId: aaid, userIdType: 'atlassianAccount', anonymousId: Container.machineId } };
+        const userDomain = await checkUserDomain();
+        newObj = {
+            ...e,
+            ...{
+                userId: aaid,
+                userIdType: 'atlassianAccount',
+                anonymousId: Container.machineId,
+            },
+        };
+
+        // Add isInternalUser to the attributes of the nested event data
+        const eventObj = newObj as any;
+        if (eventObj.trackEvent) {
+            eventObj.trackEvent.attributes = { ...eventObj.trackEvent.attributes, userDomain: userDomain };
+        } else if (eventObj.uiEvent) {
+            eventObj.uiEvent.attributes = { ...eventObj.uiEvent.attributes, userDomain: userDomain };
+        } else if (eventObj.screenEvent) {
+            eventObj.screenEvent.attributes = { ...eventObj.screenEvent.attributes, userDomain: userDomain };
+        }
     } else {
-        newObj = { ...e, ...{ anonymousId: Container.machineId } };
+        newObj = {
+            ...e,
+            ...{
+                anonymousId: Container.machineId,
+            },
+        };
     }
 
     return newObj as T;

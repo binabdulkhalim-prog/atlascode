@@ -5,6 +5,7 @@ import { Memento } from 'vscode';
 
 import * as analytics from '../analytics';
 import { AnalyticsClient } from '../analytics-node-client/src/client.min.js';
+import { Container } from '../container';
 import * as jira_client_providers from '../jira/jira-client/providers';
 import { SiteManager } from '../siteManager';
 import {
@@ -48,6 +49,12 @@ jest.mock('../container', () => ({
     Container: {
         clientManager: {
             jiraClient: () => Promise.resolve(),
+            removeClient: jest.fn(),
+        },
+        siteManager: {
+            getSitesAvailable: jest.fn(),
+            removeSite: jest.fn(),
+            addOrUpdateSite: jest.fn(),
         },
     },
 }));
@@ -74,7 +81,7 @@ describe('LoginManager', () => {
     let oauthDancer: OAuthDancer;
 
     beforeEach(() => {
-        credentialManager = new CredentialManager(forceCastTo<AnalyticsClient>(undefined));
+        credentialManager = new CredentialManager(Container.context, forceCastTo<AnalyticsClient>(undefined));
         siteManager = new SiteManager(forceCastTo<Memento>(undefined));
         analyticsClient = new AnalyticsClient();
         oauthDancer = OAuthDancer.Instance;
@@ -224,7 +231,7 @@ describe('LoginManager', () => {
                 jest.spyOn(authInfo, 'isPATAuthInfo').mockReturnValue(false);
 
                 await expect(loginManager.userInitiatedServerLogin(site, authInfoData)).rejects.toEqual(
-                    `Error authenticating with ${product.name}: Error: Authentication failed`,
+                    `Error authenticating with ${product.name}: Authentication failed`,
                 );
             },
         );
@@ -250,6 +257,101 @@ describe('LoginManager', () => {
 
             expect(credentialManager.saveAuthInfo).toHaveBeenCalled();
             expect(siteManager.addOrUpdateSite).toHaveBeenCalled();
+        });
+
+        it('removes token site when connecting a new one', async () => {
+            const existingTokenSite = forceCastTo<DetailedSiteInfo>({
+                host: 'mock-token-site.atlassian.net',
+                name: 'mock-token-site.atlassian.net',
+                product: ProductJira,
+                isCloud: true,
+                contextPath: '/',
+            });
+
+            jest.spyOn(siteManager, 'getSitesAvailable').mockReturnValue([existingTokenSite]);
+
+            const showInfoMessageSpy = jest
+                .spyOn(require('vscode').window, 'showInformationMessage')
+                .mockResolvedValue('OK');
+
+            expect(loginManager['isSiteAddedViaToken'](existingTokenSite)).toBe(true);
+
+            await loginManager['removeTokenConnectedSites']();
+
+            expect(Container.clientManager.removeClient).toHaveBeenCalledWith(existingTokenSite);
+            expect(Container.siteManager.removeSite).toHaveBeenCalledWith(existingTokenSite, true, true);
+
+            expect(showInfoMessageSpy).toHaveBeenCalledWith(
+                'Currently only one Jira site can be connected via API token at a time. The previous Jira site has been disconnected to connect the new one.',
+            );
+        });
+
+        it('restores OAuth site when removing API token site', async () => {
+            global.fetch = jest.fn().mockResolvedValue({
+                json: jest.fn().mockResolvedValue({ cloudId: 'test-cloud-id' }),
+            });
+
+            const apiTokenSite = forceCastTo<DetailedSiteInfo>({
+                host: 'example.atlassian.net',
+                name: 'example.atlassian.net',
+                product: ProductJira,
+                isCloud: true,
+                contextPath: '/',
+                userId: 'user-123',
+            });
+
+            const oauthSite = forceCastTo<DetailedSiteInfo>({
+                host: 'different.atlassian.net',
+                name: 'different',
+                product: ProductJira,
+                isCloud: true,
+                userId: 'user-123',
+                credentialId: 'oauth-cred-id',
+            });
+
+            const mockOAuthInfo = {
+                access: 'access-token',
+                refresh: 'refresh-token',
+                user: {
+                    id: 'user-123',
+                    displayName: 'Test User',
+                    email: 'test@example.com',
+                    avatarUrl: 'https://avatar.url/test.png',
+                },
+                state: AuthInfoState.Valid,
+            };
+
+            jest.spyOn(siteManager, 'getSitesAvailable').mockReturnValue([apiTokenSite, oauthSite]);
+            jest.spyOn(credentialManager, 'getAuthInfo').mockResolvedValue(mockOAuthInfo);
+            jest.spyOn(credentialManager, 'saveAuthInfo').mockResolvedValue();
+            jest.spyOn(siteManager, 'addSites').mockImplementation();
+
+            await loginManager['removeTokenConnectedSites']();
+
+            expect(Container.clientManager.removeClient).toHaveBeenCalledWith(apiTokenSite);
+            expect(Container.siteManager.removeSite).toHaveBeenCalledWith(apiTokenSite, true, true);
+
+            expect(global.fetch).toHaveBeenCalledWith('https://example.atlassian.net/_edge/tenant_info');
+            expect(credentialManager.getAuthInfo).toHaveBeenCalledWith(oauthSite, false);
+            expect(credentialManager.saveAuthInfo).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    host: 'example.atlassian.net',
+                    baseLinkUrl: 'https://example.atlassian.net',
+                    baseApiUrl: 'https://api.atlassian.com/ex/jira/test-cloud-id/rest',
+                    id: 'test-cloud-id',
+                    name: 'example',
+                }),
+                mockOAuthInfo,
+            );
+            expect(siteManager.addSites).toHaveBeenCalledWith([
+                expect.objectContaining({
+                    host: 'example.atlassian.net',
+                    baseLinkUrl: 'https://example.atlassian.net',
+                    baseApiUrl: 'https://api.atlassian.com/ex/jira/test-cloud-id/rest',
+                    id: 'test-cloud-id',
+                    name: 'example',
+                }),
+            ]);
         });
     });
 
@@ -288,7 +390,7 @@ describe('LoginManager', () => {
             jest.spyOn(authInfo, 'isBasicAuthInfo').mockReturnValue(true);
 
             await expect(loginManager.updateInfo(site, authInfoData)).rejects.toEqual(
-                'Error authenticating with Jira: Error: Authentication failed',
+                'Error authenticating with Jira: Authentication failed',
             );
         });
     });

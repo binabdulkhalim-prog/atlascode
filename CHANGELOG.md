@@ -1,20 +1,334 @@
 ### [Report an Issue](https://github.com/atlassian/atlascode/issues)
 
----
+## What's new in 4.0.15
+
+### Bug Fixes
+
+- Added missing labels for PR merge strategies(AXON-1733)
+- Fixed authentication error
+- Fixed user mentions not working in Jira issue comments when using editor
+
+## What's new in 4.0.14
+
+### Features
+
+- **Share Issue Feature**: Added ability to share Jira issues (AXON-1695)
+- **Cascading Field Support**: Added support for cascading value types in Jira fields (AXON-326)
+- **Missing Scopes Banner**: Added new banner notification for missing authentication scopes (AXON-1678)
+
+### Improvements
+
+- **Rovo Dev Updates**:
+    - Updated Rovo Dev to v0.13.22
+    - Improved keyboard navigation for context and preference buttons (AXON-1697)
+    - Made Rovo Dev interface responsive with better width properties and aligned settings actions
+    - Left-aligned CTA buttons for better UI consistency (AXON-1291)
+    - Run Rovo Dev as a subprocess instead of in terminal for better performance (AXON-1643)
+    - Improved analytics tracking and refactored analytics implementation (AXON-1545, AXON-1670)
+    - Fixed text styling for user messages
+    - Minor CSS improvements
+
+- **Build Process**: Skip nightly builds when there are no new commits to improve efficiency (AXON-1129)
+- **Default Commit Messages**: Added support for default commit messages (commit #1448)
+- **Streamlined Configuration**: Improved launch configuration setup
+
+### Bug Fixes
+
+- **Pull Request Issues**: Fixed error while fetching latest pull requests (AXON-1651)
+- **JQL Execution**: Fixed "failed to execute JQL" error (AXON-1653)
+- **Branch Creation**: Fixed branch creation errors in Start Work page (AXON-1707)
+- **Authentication**: Prevented duplicate authentication notifications (AXON-727, AXON-449)
+- **Telemetry**: Removed noisy "Error getting URL" telemetry logging from HTTP client (AXON-1650)
+- **Security**: Fixed querystring vulnerability (CVE fix)
+- **Rovo Dev Messages**: Properly handle and ignore request-usage messages from Rovo Dev
+
+## What's new in 4.0.13
+
+- Internal changes
+
+## What's new in 4.0.12
+
+### Improvements
+
+- Added support for Rovo Dev /usage and /prompts commands
+- Add saving of last chosen issue type
+
+### Bug Fixes
+
+- Fixed validation for required checkbox fields on issue creation
+
+## What's new in 4.0.10
+
+### Features
+
+- Added development field support
+- Added Branch creation and Rovo Dev actions in Create Issue Page
+- Added filter by project support
+
+## What's new in 4.0.9
+
+### Features
+
+- Added filter by assignee support
+
+## What's new in 4.0.8
+
+### Features
+
+- Added activity history support
+
+### Bug Fixes
+
+- Fixed issue with project loading in Jira Cloud Create Issue Screen
+
+## What's new in 4.0.7
+
+### Features
+
+- Added edit and delete work log support
+- Added Call-to-Action links for Rovo Dev enablement errors and credit limit errors
+
+### Bug Fixes
+
+- Fix issue with not working team adding functionality
+- Disabled CMD+B hotkey when Jira/Bitbucket editor has focus
+
+## What's new in 4.0.6
+
+### Features
+
+- Added clone jira work items support
+
+### Improvements
+
+- Added validation checks to ensure the Jira API Token hasn't expired
+- Rovo Dev now doesn't start, and prompts for fixing the API Token authentication, when the API Token is expired
+
+### Bug Fixes
+
+- Fix executable not found for Rovo Dev on Windows
+- Fix some of the exit code 1 reason 2 failures of Rovo Dev on Windows
+- Fixed UI flickering of Jira suggestions in Rovo Dev
+
+## What's new in 4.0.5
+
+### Features
+
+- Added drag and drop support into the Rovo Dev view for prompt context (requires pressing the `shift` key to drop)
+- Added native support for Jira work items for Rovo Dev prompt context
+
+## What's new in 4.0.4
+
+### Improvements
+
+- Added support for Rovo Dev /status command
+
+### Bug Fixes
+
+- Fixed duplicated slash commands in Rovo Dev's prompt box
+- Fixed broken entitlement check disabled view in 4.0.3
+
+## What's new in 4.0.3
+
+### Improvements
+
+- Improved the initialization time for Rovo Dev, allowing the process to start before its webview is ready
+- Added assignee column for child and linked issues
+
+### Bug Fixes
+
+- Fixed issue with infinite loading when searching labels
+
+## What's new in 4.0.2
+
+### Improvements
+
+- Removed the hint on code selection to send the text to Rovo Dev
+
+## What's new in 4.0.1
+
+### Features
+
+- Added a config option to enable/disable the Rovo Dev feature
+
+## What's new in 4.0.0
+
+### Features
+
+- **Rovo Dev: Atlassian AI Agent** is now available in beta
+    - New sidebar icon that opens the Rovo Dev view. Rovo Dev can answer questions about your codebase and complete tasks for you
+    - Read our docs here: https://github.com/atlassian/atlascode/wiki
+
+### Bug Fixes
+
+- Fix issue when logging out from api token does not restore the corresponding oauth site
+
+## What's new in 3.8.20
+
+- Internal changes only.
+
+## What's new in 3.8.19
+
+### Bug Fixes
+
+- Fix error while connecting several jira sites with an API token
+- Fix issue when pressing enter to submit the form does not work
+
+## What's new in 3.8.18
+
+- Internal changes only.
+
+## What's new in 3.8.17
+
+### Features
+
+- Update pipeline schema to the current latest version
+- Add the ability to search issue through all connected sites
+
+## What's new in 3.8.16
+
+- Internal changes only.
+
+## What's new in 3.8.15
+
+### Bug Fixes
+
+- Fix issue with create task functionality
+
+## What's new in 3.8.14
+
+### Features
+
+- Add the ability to update the Status column from the child issues table tree
+
+### Bug Fixes
+
+- Allow editing Cloud sites authenticated with an API token
+
+## What's new in 3.8.13
+
+### Features
+
+- Autocomplete the site URL for API token authentication using already OAuth authenticated sites
+- Don't require typing https:// when typing the authentication site's URL
+
+## What's new in 3.8.12
+
+### Bug Fixes
+
+- Fixed issue in create issue page when site select is empty after changing issue type
+- Fixed style issues on feedback modal
+
+## What's new in 3.8.11
+
+### Features
+
+- Updates Command Palette to have better categories & keywords
+
+### Bug Fixes
+
+- Fixed issue when project value was not updating in create issue page
+- Fixed issue when trying to create children issues on epic that had no children to begin with
+
+## What's new in 3.8.10
+
+### Features
+
+- Updates Command Palette to have better categories & keywords
+- Fixed usage of deprecated JQL APIs
+
+### Bug Fixes
+
+- Added loading indicator to Refresh button for Jira issue auto-refreshes
+
+## What's new in 3.8.9
+
+### Features
+
+- Added the possibility to remove a reviewer from a PR
+
+### Bug Fixes
+
+- Removed setting options that had no practical or business logic use
+- Fixed a bug where Jira site icon is broken in create Jira issue page
+- Fixed a bug with getting the error when deleting multiple instances
+- Fixed a bug where we could not assign people to a Jira issue as DC users
+- Fixed race condition issue when connecting multiple instances
+
+## What's new in 3.8.8
+
+### Features
+
+- Implemented full parent hierarchy display for Jira issues
+
+### Bug Fixes
+
+- Fixed a bug where issues would not render due to malformed epic fields (#665)
+- Fixed status button in smaller screen size
+
+## What's new in 3.8.7
+
+### Features
+
+- Update logic of selecting the default project and site to the most relevant one for the user on the Creating a JIRA issue page
+- Added filtering for options and error message in projects field on Create Jira issue page
+
+### Bug Fixes
+
+- Fixed a bug when transitioning Jira issues from 'Start work', which doesn't refresh the issues panels
+- Added sorting for status transitions based on their workflow order
+- Fixed a bug where the 'Vote for this issue' option was not accessible to the reporter
+- Fixed a bug with the vote calculation where the username who voted for the issue only updated to the correct value after refreshing the page
+- Fixed a bug when Save site button is enabled without valid credentials
+- Fixed a bug where after creating a new Jira issue, the issue would not appear in the sidebar
+- Fixed a bug where fields were not being cleared after a successful form submission and issue creation
+- Fixed an unexpected status dropdown behavior when user doesn't have enough permissions to change it
+- Improved the latency for opening, editing, and creating Jira work items
+
+## What's new in 3.8.6
+
+### Features
+
+- Added a `Don't show again` button in the pipeline notification to easily disable this type of notifications
+
+### Bug Fixes
+
+- Fixed a regression in the source branch dropdrown of the Start work page
+- Fixed sometimes the 'Assigned Jira work items' and 'Custom JQL filters' panels don't retrieve recently edited items
+- Fixed a bug when slash is missing after custom branch prefix in branch naming
+- Fixed bug when Jira issue view in active tab doesn't refresh itself after VS Code get focus
+
+## What's new in 3.8.5
+
+### Bug Fixes
+
+- Fixed a regression in the branch prefix dropdrown of the Start work page
+
+## What's new in 3.8.4
+
+### Features
+
+- Added {{{username}}} keyword for Jira's custom branch template
+
+### Bug Fixes
+
+- Fixed a bug when creating jira issues which was throwing the error 'cannot read properties of undefined'
+- Fixed a bug when fetching Pull Request commits because the URL for it is undefined
+- Fixed the Pull Request 'File nesting' toggle
+- Removed duplicated and trailing dashes on proposed branch name in 'Start work' page
 
 ## What's new in 3.8.3
 
 ### Features
 
-- Implement native Vscode onboarding experiment
 - It is now possible to transition Jira work items to a different status from the sidebar, via `Transition Issue...` context menu option
-- Notifications for unseen & recent comments on Jira and Bitbucket are now supported 
+- Notifications for unseen & recent comments on Jira and Bitbucket are now supported
 
 ## What's new in 3.8.2
 
 ### Improvement
 
-- Remove the word "Labs" from the title of the extension
+- Removed the word "Labs" from the title of the extension
 
 ## What's new in 3.8.1
 
@@ -82,7 +396,7 @@
 
 ### Improvements
 
-- The 'Release notes' button on the update notification now lands on the vscode markeplace page for Atlascode, Changelog tab.
+- The 'Release notes' button on the update notification now lands on the VS Code markeplace page for Atlascode, Changelog tab.
 
 ### Bug fixes
 
@@ -254,7 +568,7 @@
 
 ### Improvements
 
-- Lowered VSCode engine compatibility to v1.77.0
+- Lowered VS Code engine compatibility to v1.77.0
 
 ## What's new in 3.4.0
 
@@ -300,7 +614,7 @@
 ### Improvements
 
 - A number of small improvements on the package structure
-- Re-enabled authentication when VSCode is running remotely
+- Re-enabled authentication when VS Code is running remotely
 
 ## What's New in 3.0.10
 

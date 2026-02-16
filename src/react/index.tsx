@@ -1,6 +1,7 @@
-import { CssBaseline, ThemeProvider } from '@material-ui/core';
+import { CssBaseline } from '@mui/material';
+import { StyledEngineProvider, ThemeProvider } from '@mui/material/styles';
 import React, { useCallback, useEffect, useState } from 'react';
-import * as ReactDOM from 'react-dom';
+import * as ReactDOM from 'react-dom/client';
 import useConstant from 'use-constant';
 
 import AtlGlobalStyles from './atlascode/common/AtlGlobalStyles';
@@ -23,11 +24,11 @@ const routes: Record<string, any> = {
     atlascodeSettingsV2: React.lazy(
         () => import(/* webpackChunkName: "atlascodeSettingsV2" */ './atlascode/config/ConfigPage'),
     ),
-    atlascodeOnboardingV2: React.lazy(
-        () => import(/* webpackChunkName: "atlascodeOnboardingV2" */ './atlascode/onboarding/OnboardingPage'),
+    atlascodeSettingsV3: React.lazy(
+        () => import(/* webpackChunkName: "atlascodeSettingsV3" */ './atlascode/config/ConfigPageV3'),
     ),
-    startWorkPageV2: React.lazy(
-        () => import(/* webpackChunkName: "startWorkPageV2" */ './atlascode/startwork/StartWorkPage'),
+    startWorkPageV3: React.lazy(
+        () => import(/* webpackChunkName: "startWorkPageV3" */ './atlascode/startwork/v3/StartWorkPageV3'),
     ),
     pipelineSummaryV2: React.lazy(
         () => import(/* webpackChunkName: "pipelineSummaryV2" */ './atlascode/pipelines/PipelineSummaryPage'),
@@ -39,6 +40,13 @@ const routes: Record<string, any> = {
     createPullRequestPageV2: React.lazy(
         () => import(/* webpackChunkName: "createPullRequestPageV2" */ './atlascode/pullrequest/CreatePullRequestPage'),
     ),
+    createWorkItemWebview: React.lazy(
+        () =>
+            import(
+                /* webpackChunkName: "createWorkItemWebview" */ './atlascode/create-work-item/createWorkItemWebview'
+            ),
+    ),
+    atlascodeRovoDev: React.lazy(() => import(/* webpackChunkName: "atlascodeRovoDev" */ '../rovo-dev/ui/rovoDevView')),
 };
 
 const view = document.getElementById('reactView') as HTMLElement;
@@ -77,9 +85,11 @@ const App = () => {
                         <ErrorStateContext.Provider value={errorState}>
                             <PMFControllerContext.Provider value={pmfController}>
                                 <PMFStateContext.Provider value={pmfState}>
-                                    <CssBaseline />
-                                    <AtlGlobalStyles />
-                                    <Page />
+                                    <StyledEngineProvider injectFirst>
+                                        <CssBaseline />
+                                        <AtlGlobalStyles />
+                                        <Page />
+                                    </StyledEngineProvider>
                                 </PMFStateContext.Provider>
                             </PMFControllerContext.Provider>
                         </ErrorStateContext.Provider>
@@ -90,4 +100,5 @@ const App = () => {
     );
 };
 
-ReactDOM.render(<App />, root);
+const reactRoot = ReactDOM.createRoot(root);
+reactRoot.render(<App />);

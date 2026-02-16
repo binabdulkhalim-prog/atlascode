@@ -1,4 +1,5 @@
 import { createIssueUI, EditIssueUI, editIssueUI } from '@atlassianlabs/jira-metaui-client';
+import { DEFAULT_API_VERSION } from '@atlassianlabs/jira-pi-client';
 import {
     isMinimalIssue,
     MinimalIssue,
@@ -16,8 +17,16 @@ export async function fetchCreateIssueUI(
     projectKey: string,
 ): Promise<CreateMetaTransformerResult<DetailedSiteInfo>> {
     const client = await Container.clientManager.jiraClient(siteDetails);
-
-    return await createIssueUI(projectKey, client);
+    const [fields, issueLinkTypes, issueCreateMetadata] = await Promise.all([
+        Container.jiraSettingsManager.getAllFieldsForSite(siteDetails),
+        Container.jiraSettingsManager.getIssueLinkTypes(siteDetails),
+        Container.jiraSettingsManager.getIssueCreateMetadata(projectKey, siteDetails),
+    ]);
+    return await createIssueUI(projectKey, client, DEFAULT_API_VERSION, {
+        fields,
+        issueLinkTypes,
+        issueCreateMetadata,
+    });
 }
 
 export async function getCachedOrFetchMinimalIssue(
@@ -41,9 +50,11 @@ export async function fetchMinimalIssue(
     issue: string,
     siteDetails: DetailedSiteInfo,
 ): Promise<MinimalIssue<DetailedSiteInfo>> {
-    const fieldIds = await Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite(siteDetails);
-    const client = await Container.clientManager.jiraClient(siteDetails);
-    const epicInfo = await Container.jiraSettingsManager.getEpicFieldsForSite(siteDetails);
+    const [client, epicInfo] = await Promise.all([
+        Container.clientManager.jiraClient(siteDetails),
+        Container.jiraSettingsManager.getEpicFieldsForSite(siteDetails),
+    ]);
+    const fieldIds = Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite(epicInfo);
 
     const res = await client.getIssue(issue, fieldIds);
     return minimalIssueFromJsonObject(res, siteDetails, epicInfo);
@@ -51,6 +62,13 @@ export async function fetchMinimalIssue(
 
 export async function fetchEditIssueUI(issue: MinimalIssue<DetailedSiteInfo>): Promise<EditIssueUI<DetailedSiteInfo>> {
     const client = await Container.clientManager.jiraClient(issue.siteDetails);
-
-    return await editIssueUI(issue, client);
+    const [fields, issueLinkTypes, issueCreateMetadata] = await Promise.all([
+        Container.jiraSettingsManager.getAllFieldsForSite(issue.siteDetails),
+        Container.jiraSettingsManager.getIssueLinkTypes(issue.siteDetails),
+        Container.jiraSettingsManager.getIssueCreateMetadata(
+            issue.key.substring(0, issue.key.indexOf('-')), // Project Key
+            issue.siteDetails,
+        ),
+    ]);
+    return await editIssueUI(issue, client, DEFAULT_API_VERSION, { fields, issueLinkTypes, issueCreateMetadata });
 }

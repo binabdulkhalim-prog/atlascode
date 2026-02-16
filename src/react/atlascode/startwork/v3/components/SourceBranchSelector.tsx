@@ -1,0 +1,57 @@
+import { Autocomplete, Grid, TextField, Typography } from '@mui/material';
+import React from 'react';
+
+import { RepoData } from '../../../../../lib/ipc/toUI/startWork';
+import { Branch } from '../../../../../typings/git';
+import { getAllBranches } from '../utils/branchUtils';
+
+const filterOptions = (options: Branch[], state: { inputValue: string }) => {
+    if (!state.inputValue) {
+        return options;
+    }
+    const lowerInput = state.inputValue.toLowerCase();
+    return options.filter((option) => option.name?.toLowerCase().includes(lowerInput));
+};
+
+const getOptionLabel = (option: Branch) => option.name || '';
+const getOptionKey = (option: Branch) => `${option.type}-${option.remote || 'local'}-${option.name}`;
+const isOptionEqualToValue = (option: Branch, value: Branch) =>
+    option.name === value.name && option.type === value.type;
+
+interface SourceBranchSelectorProps {
+    selectedRepository: RepoData | undefined;
+    sourceBranch: Branch;
+    onSourceBranchChange: (branch: Branch) => void;
+}
+
+export const SourceBranchSelector: React.FC<SourceBranchSelectorProps> = ({
+    selectedRepository,
+    sourceBranch,
+    onSourceBranchChange,
+}) => {
+    const allBranches = getAllBranches(selectedRepository || undefined);
+
+    const handleSourceBranchChange = (event: React.ChangeEvent<{}>, value: Branch | null) => {
+        if (value) {
+            onSourceBranchChange(value);
+        }
+    };
+
+    return (
+        <Grid item>
+            <Typography variant="body2">Source branch</Typography>
+            <Autocomplete
+                options={allBranches}
+                getOptionLabel={getOptionLabel}
+                getOptionKey={getOptionKey}
+                isOptionEqualToValue={isOptionEqualToValue}
+                value={sourceBranch}
+                filterOptions={filterOptions}
+                onChange={handleSourceBranchChange}
+                renderInput={(params) => <TextField {...params} size="small" variant="outlined" />}
+                size="small"
+                disableClearable
+            />
+        </Grid>
+    );
+};

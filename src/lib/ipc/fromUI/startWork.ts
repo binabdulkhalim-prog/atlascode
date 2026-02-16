@@ -1,5 +1,5 @@
-import { ReducerAction } from '@atlassianlabs/guipi-core-controller';
 import { Transition } from '@atlassianlabs/jira-pi-common-models';
+import { ReducerAction } from 'src/ipc/messaging';
 
 import { WorkspaceRepo } from '../../../bitbucket/model';
 import { Branch } from '../../../typings/git';
@@ -11,6 +11,12 @@ export enum StartWorkActionType {
     StartRequest = 'startRequest',
     OpenSettings = 'openSettings',
     GetImage = 'getImage',
+    RefreshTreeViews = 'refreshTreeViews',
+    GetRovoDevPreference = 'getRovoDevPreference',
+    UpdateRovoDevPreference = 'updateRovoDevPreference',
+    OpenRovoDev = 'openRovoDev',
+    GetPushBranchPreference = 'getPushBranchPreference',
+    UpdatePushBranchPreference = 'updatePushBranchPreference',
 }
 
 export type StartWorkAction =
@@ -18,6 +24,12 @@ export type StartWorkAction =
     | ReducerAction<StartWorkActionType.StartRequest, StartRequestAction>
     | ReducerAction<StartWorkActionType.OpenSettings, OpenSettingsAction>
     | ReducerAction<StartWorkActionType.GetImage, GetImageAction>
+    | ReducerAction<StartWorkActionType.RefreshTreeViews, {}>
+    | ReducerAction<StartWorkActionType.GetPushBranchPreference, {}>
+    | ReducerAction<StartWorkActionType.UpdatePushBranchPreference, { enabled: boolean }>
+    | ReducerAction<StartWorkActionType.GetRovoDevPreference, {}>
+    | ReducerAction<StartWorkActionType.UpdateRovoDevPreference, { enabled: boolean }>
+    | ReducerAction<StartWorkActionType.OpenRovoDev, {}>
     | CommonAction;
 
 export interface StartRequestAction {

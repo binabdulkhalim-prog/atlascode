@@ -10,7 +10,7 @@ import {
     MenuItem,
     Switch,
     TextField,
-} from '@material-ui/core';
+} from '@mui/material';
 import React, { useCallback, useState } from 'react';
 import { useForm } from 'react-hook-form';
 
@@ -25,11 +25,17 @@ type FeedbackDialogButtonProps = {
 export const FeedbackDialogButton: React.FunctionComponent<FeedbackDialogButtonProps> = ({ user, postMessageFunc }) => {
     const [formOpen, setFormOpen] = useState(false);
 
-    const { register, handleSubmit, errors, watch, formState, reset } = useForm<FeedbackData>({
+    const {
+        register,
+        handleSubmit,
+        formState: { errors, isValid },
+        watch,
+        reset,
+    } = useForm<FeedbackData>({
         mode: 'onChange',
     });
 
-    const watches = watch(['canBeContacted']);
+    const canBeContacted = watch('canBeContacted');
 
     const submitForm = useCallback(
         (data: FeedbackData) => {
@@ -64,19 +70,18 @@ export const FeedbackDialogButton: React.FunctionComponent<FeedbackDialogButtonP
                     <Grid container direction="column" spacing={2}>
                         <Grid item>
                             <TextField
-                                name="type"
+                                {...register('type')}
                                 defaultValue={FeedbackType.Question}
                                 select
                                 required
                                 autoFocus
                                 autoComplete="off"
-                                margin="dense"
+                                size="small"
                                 id="type"
                                 label="Type of Feedback"
                                 helperText={errors.type ? errors.type.message : undefined}
                                 fullWidth
                                 error={!!errors.type}
-                                inputRef={register}
                             >
                                 <MenuItem key={FeedbackType.Question} value={FeedbackType.Question}>
                                     Ask a question
@@ -94,6 +99,9 @@ export const FeedbackDialogButton: React.FunctionComponent<FeedbackDialogButtonP
                         </Grid>
                         <Grid item>
                             <TextField
+                                {...register('description', {
+                                    required: 'Description is required',
+                                })}
                                 required
                                 multiline
                                 rows={3}
@@ -103,39 +111,33 @@ export const FeedbackDialogButton: React.FunctionComponent<FeedbackDialogButtonP
                                 helperText={errors.description ? errors.description.message : undefined}
                                 fullWidth
                                 error={!!errors.description}
-                                inputRef={register({
-                                    required: 'Description URL is required',
-                                })}
                             />
                         </Grid>
                         <Grid item>
                             <TextField
-                                name="userName"
+                                {...register('userName', {
+                                    required: 'Your name is required',
+                                })}
                                 defaultValue={user.userName}
                                 required
                                 autoComplete="off"
-                                margin="dense"
+                                size="small"
                                 id="userName"
                                 label="Your name"
                                 helperText={errors.userName ? errors.userName.message : undefined}
                                 fullWidth
                                 error={!!errors.userName}
-                                inputRef={register({
-                                    required: 'Your name is required',
-                                })}
                             />
                         </Grid>
                         <Grid item>
                             <ToggleWithLabel
                                 control={
                                     <Switch
-                                        name="canBeContacted"
+                                        {...register('canBeContacted')}
                                         defaultChecked={true}
                                         size="small"
                                         color="primary"
                                         id="canBeContacted"
-                                        value="canBeContacted"
-                                        inputRef={register}
                                     />
                                 }
                                 label="Atlassian can contact me about this feedback"
@@ -144,33 +146,27 @@ export const FeedbackDialogButton: React.FunctionComponent<FeedbackDialogButtonP
                             />
                         </Grid>
                         <Grid item>
-                            {watches.canBeContacted && (
+                            {canBeContacted && (
                                 <TextField
+                                    {...register('emailAddress', {
+                                        required: 'Your contact email is required',
+                                    })}
                                     required
-                                    name="emailAddress"
                                     defaultValue={user.emailAddress}
                                     autoComplete="off"
-                                    margin="dense"
+                                    size="small"
                                     id="emailAddress"
                                     label="Your contact email"
                                     helperText={errors.emailAddress ? errors.emailAddress.message : undefined}
                                     fullWidth
                                     error={!!errors.emailAddress}
-                                    inputRef={register({
-                                        required: 'Your contact email is required',
-                                    })}
                                 />
                             )}
                         </Grid>
                     </Grid>
                 </DialogContent>
                 <DialogActions>
-                    <Button
-                        disabled={!formState.isValid}
-                        onClick={handleSubmit(submitForm)}
-                        variant="contained"
-                        color="primary"
-                    >
+                    <Button disabled={!isValid} onClick={handleSubmit(submitForm)} variant="contained" color="primary">
                         Submit
                     </Button>
                     <Button onClick={handleDialogClose} color="primary">

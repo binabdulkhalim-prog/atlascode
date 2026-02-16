@@ -6,7 +6,7 @@ import * as React from 'react';
 
 import { colorToLozengeAppearanceMap } from './colors';
 
-type OptionFunc = (option: any) => string;
+export type OptionFunc = (option: any) => string;
 type ComponentFunc = (props: any) => JSX.Element;
 
 const returnOptionOrValueFunc = (option: any): any => {
@@ -194,6 +194,7 @@ const LabelOption = (props: any) => {
 
     return (
         <components.Option {...props}>
+            {/* eslint-disable-next-line react-dom/no-dangerously-set-innerhtml -- TODO check if needed */}
             <div ref={props.innerRef} {...props.innerProps} dangerouslySetInnerHTML={{ __html: label }} />
         </components.Option>
     );
@@ -299,7 +300,10 @@ const IssueLinkTypeValue = (props: any) => (
 export const IssueSuggestionOption = (props: any) => (
     <components.Option {...props}>
         <div ref={props.innerRef} {...props.innerProps} className="ac-flex">
-            <span style={{ marginLeft: '10px' }}>{props.data.key}</span>
+            {props.data.img && (
+                <img src={props.data.img} width="16" height="16" alt="" style={{ marginRight: '8px' }} />
+            )}
+            <span style={{ marginLeft: '10px', fontWeight: 'bold' }}>{props.data.key}</span>
             <span style={{ marginLeft: '1em' }}>{props.data.summaryText}</span>
         </div>
     </components.Option>
@@ -308,7 +312,10 @@ export const IssueSuggestionOption = (props: any) => (
 export const IssueSuggestionValue = (props: any) => (
     <components.SingleValue {...props}>
         <div ref={props.innerRef} {...props.innerProps} className="ac-flex">
-            <span style={{ marginLeft: '4px' }}>{props.data.key}</span>
+            {props.data.img && (
+                <img src={props.data.img} width="16" height="16" alt="" style={{ marginRight: '8px' }} />
+            )}
+            <span style={{ marginLeft: '4px', fontWeight: 'bold' }}>{props.data.key}</span>
             <span style={{ marginLeft: '4px', marginRight: '4px' }}>{props.data.summaryText}</span>
         </div>
     </components.SingleValue>
@@ -319,6 +326,7 @@ export enum SelectComponentType {
     Creatable = 'creatable',
     Async = 'async',
     AsyncCreatable = 'asynccreatable',
+    Cascading = 'cascading',
 }
 
 export function selectComponentType(field: SelectFieldUI): SelectComponentType {
@@ -330,8 +338,12 @@ export function selectComponentType(field: SelectFieldUI): SelectComponentType {
         return SelectComponentType.Creatable;
     }
 
-    if (field.autoCompleteUrl.trim() !== '') {
+    if (field.autoCompleteUrl && field.autoCompleteUrl.trim() !== '') {
         return SelectComponentType.Async;
+    }
+
+    if (field.isCascading) {
+        return SelectComponentType.Cascading;
     }
 
     return SelectComponentType.Select;
@@ -360,6 +372,9 @@ export function labelFuncForValueType(vt: ValueType): OptionFunc {
         case ValueType.User:
         case ValueType.Watches: {
             return returnDisplayNameFunc;
+        }
+        case ValueType.OptionWithChild: {
+            return returnValueFunc;
         }
 
         default: {
@@ -402,8 +417,13 @@ export function valueFuncForValueType(vt: ValueType): OptionFunc {
         }
     }
 }
+export type ComponentsForValueType = {
+    Option: ComponentFunc;
+    SingleValue: (props: any) => React.JSX.Element;
+    MultiValueLabel?: (props: any) => React.JSX.Element;
+};
 
-export function getComponentsForValueType(vt: ValueType): Object {
+export function getComponentsForValueType(vt: ValueType): ComponentsForValueType {
     return {
         ...{ Option: getOptionComponentForValueType(vt) },
         ...getValueComponentForValueType(vt),
@@ -437,7 +457,12 @@ function getOptionComponentForValueType(vt: ValueType): ComponentFunc {
     }
 }
 
-function getValueComponentForValueType(vt: ValueType): Object {
+export type ValueComponentForValueType = {
+    SingleValue: (props: any) => React.JSX.Element;
+    MultiValueLabel?: (props: any) => React.JSX.Element;
+};
+
+function getValueComponentForValueType(vt: ValueType): ValueComponentForValueType {
     switch (vt) {
         case ValueType.Priority:
         case ValueType.IssueType: {

@@ -16,11 +16,13 @@ import {
     DetailedSiteInfo,
     emptyAuthInfo,
     emptyBasicAuthInfo,
+    Product,
     ProductBitbucket,
     ProductJira,
     SiteInfo,
 } from '../../atlclients/authInfo';
 import { configuration, IConfig, JQLEntry } from '../../config/configuration';
+import { Commands, ExtensionId } from '../../constants';
 import { Container } from '../../container';
 import { getFeedbackUser } from '../../feedback/feedbackUser';
 import { AnalyticsApi } from '../../lib/analyticsApi';
@@ -49,7 +51,56 @@ export class VSCConfigActionApi implements ConfigActionApi {
 
     public async clearAuth(site: DetailedSiteInfo): Promise<void> {
         await Container.clientManager.removeClient(site);
-        Container.siteManager.removeSite(site);
+        await Container.siteManager.removeSite(site);
+
+        const existingSites = Container.siteManager.getSitesAvailable(ProductJira);
+        const isOauthSiteConnected = existingSites.find(
+            (existingSite) =>
+                existingSite.isCloud && existingSite.name !== existingSite.host && existingSite.userId === site.userId,
+        );
+
+        await this.restoreOAuthSiteIfNeeded(site, isOauthSiteConnected);
+    }
+
+    private async restoreOAuthSiteIfNeeded(
+        removedSite: DetailedSiteInfo,
+        oauthSiteConnected?: DetailedSiteInfo,
+    ): Promise<void> {
+        if (!oauthSiteConnected || removedSite.name !== removedSite.host || !removedSite.isCloud) {
+            return;
+        }
+
+        try {
+            const oauthAuthInfo = await Container.credentialManager.getAuthInfo(oauthSiteConnected, false);
+
+            if (!oauthAuthInfo) {
+                return;
+            }
+
+            const cloudId = await this.fetchCloudSiteId(removedSite.host);
+
+            const siteName = removedSite.host.split('.')[0];
+
+            const oauthVersion: DetailedSiteInfo = {
+                ...oauthSiteConnected,
+                host: removedSite.host,
+                baseLinkUrl: `https://${removedSite.host}`,
+                baseApiUrl: `https://api.atlassian.com/ex/jira/${cloudId}/rest`,
+                id: cloudId,
+                name: siteName,
+            };
+
+            await Container.credentialManager.saveAuthInfo(oauthVersion, oauthAuthInfo);
+            Container.siteManager.addSites([oauthVersion]);
+        } catch (error) {
+            console.error('Error restoring OAuth site:', error);
+        }
+    }
+
+    private async fetchCloudSiteId(host: string): Promise<string> {
+        const response = await fetch(`https://${host}/_edge/tenant_info`);
+        const data = await response.json();
+        return data.cloudId;
     }
 
     public async fetchJqlOptions(site: DetailedSiteInfo): Promise<JQLAutocompleteData> {
@@ -119,28 +170,35 @@ export class VSCConfigActionApi implements ConfigActionApi {
     }
 
     public async getSitesWithAuth(): Promise<[SiteWithAuthInfo[], SiteWithAuthInfo[]]> {
-        const jiraSitesAvailable = Container.siteManager.getSitesAvailable(ProductJira);
-        const bitbucketSitesAvailable = Container.siteManager.getSitesAvailable(ProductBitbucket);
+        const processSites = async (
+            product: Product,
+            defaultCloudAuth: AuthInfo,
+            defaultServerAuth: AuthInfo,
+        ): Promise<SiteWithAuthInfo[]> => {
+            const availableSites = Container.siteManager.getSitesAvailable(product);
+            const uniqueSites = Array.from(new Map(availableSites.map((site) => [site.credentialId, site])).values());
 
-        const jiraSites = await Promise.all(
-            jiraSitesAvailable.map(async (jiraSite: DetailedSiteInfo): Promise<SiteWithAuthInfo> => {
-                const jiraAuth = await Container.credentialManager.getAuthInfo(jiraSite, false);
-                return {
-                    site: jiraSite,
-                    auth: jiraAuth ? jiraAuth : jiraSite.isCloud ? emptyAuthInfo : emptyBasicAuthInfo,
-                };
-            }),
-        );
+            const authResults = await Promise.allSettled(
+                uniqueSites.map((site) => Container.credentialManager.getAuthInfo(site)),
+            );
 
-        const bitbucketSites = await Promise.all(
-            bitbucketSitesAvailable.map(async (bitbucketSite: DetailedSiteInfo): Promise<SiteWithAuthInfo> => {
-                const bitbucketAuth = await Container.credentialManager.getAuthInfo(bitbucketSite);
-                return {
-                    site: bitbucketSite,
-                    auth: bitbucketAuth ? bitbucketAuth : bitbucketSite.isCloud ? emptyAuthInfo : emptyBasicAuthInfo,
-                };
-            }),
-        );
+            const authMap = new Map<string, AuthInfo>();
+
+            uniqueSites.forEach((site, i) => {
+                const result = authResults[i];
+                if (result.status === 'fulfilled' && result.value) {
+                    authMap.set(site.credentialId, result.value);
+                }
+            });
+
+            return availableSites.map((site) => ({
+                site,
+                auth: authMap.get(site.credentialId) ?? (site.isCloud ? defaultCloudAuth : defaultServerAuth),
+            }));
+        };
+
+        const jiraSites = await processSites(ProductJira, emptyAuthInfo, emptyBasicAuthInfo);
+        const bitbucketSites = await processSites(ProductBitbucket, emptyAuthInfo, emptyBasicAuthInfo);
 
         return [jiraSites, bitbucketSites];
     }
@@ -277,6 +335,7 @@ export class VSCConfigActionApi implements ConfigActionApi {
 
     public createJiraIssue(): void {
         Container.explorerFocusManager.fireEvent(FocusEventActions.CREATEISSUE, true);
+        commands.executeCommand(Commands.CreateIssue, undefined, 'settingsPage');
     }
 
     public viewJiraIssue(): void {
@@ -289,6 +348,11 @@ export class VSCConfigActionApi implements ConfigActionApi {
 
     public viewPullRequest(): void {
         Container.explorerFocusManager.fireEvent(FocusEventActions.VIEWPULLREQUEST, true);
+    }
+
+    public async openNativeSettings(): Promise<void> {
+        await commands.executeCommand('workbench.action.openSettings', `@ext:${ExtensionId}`);
+        this._analyticsApi.fireOpenSettingsButtonEvent('advancedConfigsPanel');
     }
 
     private openWorkspaceSettingsJson(rootPath: string) {

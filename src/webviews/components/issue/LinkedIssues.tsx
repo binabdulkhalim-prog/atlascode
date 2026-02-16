@@ -1,17 +1,19 @@
 import Button from '@atlaskit/button';
-import Lozenge from '@atlaskit/lozenge';
 import TableTree from '@atlaskit/table-tree';
 import Tooltip from '@atlaskit/tooltip';
-import { IssueLinkIssue, MinimalIssueLink, MinimalIssueOrKeyAndSite } from '@atlassianlabs/jira-pi-common-models';
+import { IssueLinkIssue, MinimalIssueLink, MinimalIssueOrKeyAndSite, User } from '@atlassianlabs/jira-pi-common-models';
 import * as React from 'react';
 
 import { DetailedSiteInfo } from '../../../atlclients/authInfo';
-import { colorToLozengeAppearanceMap } from '../colors';
+import { AssigneeColumn, Priority, StatusColumn, Summary } from './IssueColumns';
 
 type LinkedIssuesProps = {
     issuelinks: MinimalIssueLink<DetailedSiteInfo>[];
     onIssueClick: (issueOrKey: MinimalIssueOrKeyAndSite<DetailedSiteInfo>) => void;
     onDelete: (issueLink: any) => void;
+    onStatusChange?: (issueKey: string, statusName: string) => void;
+    onAssigneeChange?: (issueKey: string, assignee: User | null) => void;
+    fetchUsers?: (input: string) => Promise<User[]>;
 };
 
 type ItemData = {
@@ -19,14 +21,15 @@ type ItemData = {
     issue: IssueLinkIssue<DetailedSiteInfo>;
     onIssueClick: (issueOrKey: MinimalIssueOrKeyAndSite<DetailedSiteInfo>) => void;
     onDelete: (issueLink: any) => void;
+    onStatusChange?: (issueKey: string, statusName: string) => void;
 };
 
 const IssueKey = (data: ItemData) => {
     const issueTypeMarkup =
         data.issue.issuetype && data.issue.issuetype.name && data.issue.issuetype.iconUrl ? (
-            <div style={{ width: '16px', height: '16px' }}>
+            <div style={{ width: '16px', height: '16px', flexShrink: 0 }}>
                 <Tooltip content={data.issue.issuetype.name}>
-                    <img src={data.issue.issuetype.iconUrl} />
+                    <img src={data.issue.issuetype.iconUrl} alt={data.issue.issuetype.name || 'Issue type'} />
                 </Tooltip>
             </div>
         ) : (
@@ -34,55 +37,41 @@ const IssueKey = (data: ItemData) => {
         );
 
     return (
-        <div className="ac-flex-space-between">
-            <p style={{ display: 'inline' }}>
-                <em style={{ position: 'absolute', bottom: '2.25em' }}>{data.linkDescription}</em>
-            </p>
-            {issueTypeMarkup}
-            <Button
-                appearance="subtle-link"
-                onClick={() => data.onIssueClick({ siteDetails: data.issue.siteDetails, key: data.issue.key })}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <em
+                style={{
+                    fontSize: '11px',
+                    fontStyle: 'italic',
+                    color: 'var(--vscode-descriptionForeground)',
+                }}
             >
-                {data.issue.key}
-            </Button>
+                {data.linkDescription}
+            </em>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                {issueTypeMarkup}
+                <Button
+                    appearance="subtle-link"
+                    onClick={() => data.onIssueClick({ siteDetails: data.issue.siteDetails, key: data.issue.key })}
+                >
+                    {data.issue.key}
+                </Button>
+            </div>
         </div>
     );
 };
 
-const Summary = (data: ItemData) => <p style={{ display: 'inline' }}>{data.issue.summary}</p>;
-const Priority = (data: ItemData) => {
-    if (data.issue.priority && data.issue.priority.name && data.issue.priority.iconUrl) {
-        return (
-            <div style={{ width: '16px', height: '16px' }}>
-                <Tooltip content={data.issue.priority.name}>
-                    <img src={data.issue.priority.iconUrl} />
-                </Tooltip>
-            </div>
-        );
-    }
-
-    return <React.Fragment />;
-};
-
-const StatusColumn = (data: ItemData) => {
-    if (data.issue.status && data.issue.status.statusCategory) {
-        const lozColor: string = colorToLozengeAppearanceMap[data.issue.status.statusCategory.colorName];
-        return <Lozenge appearance={lozColor}>{data.issue.status.name}</Lozenge>;
-    }
-
-    return <React.Fragment />;
-};
-// const Delete = (data: ItemData) => {
-//     return (<div className='ac-delete' onClick={() => data.onDelete(data.issue)}>
-//         <TrashIcon label='trash' />
-//     </div>);
-// };
-
-export const LinkedIssues: React.FunctionComponent<LinkedIssuesProps> = ({ issuelinks, onIssueClick, onDelete }) => {
+export const LinkedIssues: React.FunctionComponent<LinkedIssuesProps> = ({
+    issuelinks,
+    onIssueClick,
+    onDelete,
+    onStatusChange,
+    onAssigneeChange,
+    fetchUsers,
+}) => {
     return (
         <TableTree
-            columns={[IssueKey, Summary, Priority, StatusColumn]}
-            columnWidths={['150px', '100%', '20px', '150px']}
+            columns={[IssueKey, Summary, Priority, AssigneeColumn, StatusColumn]}
+            columnWidths={['100%', '100%', '20px', '100%', '150px']}
             items={issuelinks.map((issuelink) => {
                 return {
                     id: issuelink.id,
@@ -91,6 +80,9 @@ export const LinkedIssues: React.FunctionComponent<LinkedIssuesProps> = ({ issue
                         issue: issuelink.inwardIssue || issuelink.outwardIssue,
                         onIssueClick: onIssueClick,
                         onDelete: onDelete,
+                        onStatusChange: onStatusChange,
+                        onAssigneeChange: onAssigneeChange,
+                        fetchUsers: fetchUsers,
                     },
                 };
             })}

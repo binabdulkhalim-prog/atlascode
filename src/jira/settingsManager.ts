@@ -1,5 +1,6 @@
 import { EpicFieldInfo, getEpicFieldInfo, IssueLinkType } from '@atlassianlabs/jira-pi-common-models';
 import { Fields, readField } from '@atlassianlabs/jira-pi-meta-models';
+import { IssueCreateMetadata } from '@atlassianlabs/jira-pi-meta-models';
 import { Disposable } from 'vscode';
 
 import { DetailedSiteInfo } from '../atlclients/authInfo';
@@ -37,14 +38,36 @@ const minimalDefaultIssueFields: string[] = [
     'parent',
     'subtasks',
     'issuelinks',
+    'assignee',
 ];
 
 export class JiraSettingsManager extends Disposable {
     private _fieldStore: Map<string, Fields> = new Map<string, Fields>();
     private _issueLinkTypesStore: Map<string, IssueLinkType[]> = new Map<string, IssueLinkType[]>();
+    private _projectKeyCMetaStore: Map<string, IssueCreateMetadata> = new Map<string, IssueCreateMetadata>(); // cMeta for different projects, (projectKey, siteInfi)
 
     constructor() {
         super(() => this.dispose());
+    }
+
+    public async getIssueCreateMetadata(
+        projectKey: string,
+        siteInfo: DetailedSiteInfo,
+    ): Promise<IssueCreateMetadata | undefined> {
+        let cMeta: IssueCreateMetadata = { projects: [] };
+        if (
+            !this._projectKeyCMetaStore.has(projectKey) ||
+            this._projectKeyCMetaStore.get(projectKey)?.projects.length === 0
+        ) {
+            try {
+                const client = await Container.clientManager.jiraClient(siteInfo);
+                cMeta = await client.getCreateIssueMetadata(projectKey);
+                this._projectKeyCMetaStore.set(projectKey, cMeta);
+            } catch (error) {
+                Logger.error(error, 'Create issue metadata not available.');
+            }
+        }
+        return this._projectKeyCMetaStore.get(projectKey);
     }
 
     public async getIssueLinkTypes(site: DetailedSiteInfo): Promise<IssueLinkType[]> {
@@ -69,9 +92,8 @@ export class JiraSettingsManager extends Disposable {
         return this._issueLinkTypesStore.get(site.id)!;
     }
 
-    public async getMinimalIssueFieldIdsForSite(site: DetailedSiteInfo): Promise<string[]> {
+    public getMinimalIssueFieldIdsForSite(epicInfo: EpicFieldInfo): string[] {
         const fields = Array.from(minimalDefaultIssueFields);
-        const epicInfo = await this.getEpicFieldsForSite(site);
 
         if (epicInfo.epicsEnabled) {
             fields.push(epicInfo.epicLink.id, epicInfo.epicName.id);

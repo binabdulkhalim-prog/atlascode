@@ -11,7 +11,6 @@ import {
     Uri,
 } from 'vscode';
 
-import { ProductBitbucket } from '../../atlclients/authInfo';
 import { clientForSite } from '../../bitbucket/bbUtils';
 import { WorkspaceRepo } from '../../bitbucket/model';
 import { configuration } from '../../config/configuration';
@@ -65,7 +64,7 @@ export class PipelinesTree extends BaseTreeDataProvider {
         this._onDidChangeTreeData.fire(null);
     }
 
-    getTreeItem(element: AbstractBaseNode): TreeItem | Promise<TreeItem> {
+    override getTreeItem(element: AbstractBaseNode): TreeItem | Promise<TreeItem> {
         return element.getTreeItem();
     }
 
@@ -86,12 +85,12 @@ export class PipelinesTree extends BaseTreeDataProvider {
         return this._childrenMap.size === 0 ? emptyBitbucketNodes : Array.from(this._childrenMap.values());
     }
 
-    public refresh() {
+    public override refresh() {
         this._childrenMap.clear();
         this._onDidChangeTreeData.fire(null);
     }
 
-    async dispose() {
+    override async dispose() {
         this._disposable.dispose();
     }
 }
@@ -129,15 +128,10 @@ class PipelinesRepoNode extends AbstractBaseNode {
         this._pipelines = this._pipelines.concat(newPipelines);
     }
 
-    async getChildren(element?: AbstractBaseNode): Promise<AbstractBaseNode[]> {
+    override async getChildren(element?: AbstractBaseNode): Promise<AbstractBaseNode[]> {
         if (!this.workspaceRepo.mainSiteRemote.site) {
-            return Promise.resolve([
-                new SimpleNode(`Please login to ${ProductBitbucket.name}`, {
-                    command: Commands.ShowConfigPage,
-                    title: 'Login to Bitbucket',
-                    arguments: [ProductBitbucket],
-                }),
-            ]);
+            // Show viewsWelcome with login button if user is not authenticated
+            return Promise.resolve([]);
         }
         if (!element || element instanceof PipelinesRepoNode) {
             if (!this._pipelines) {
@@ -237,7 +231,7 @@ export class PipelineNode extends AbstractBaseNode {
         return item;
     }
 
-    getChildren(element: AbstractBaseNode): Promise<AbstractBaseNode[]> {
+    override getChildren(element: AbstractBaseNode): Promise<AbstractBaseNode[]> {
         return this._repoNode.getChildren(element);
     }
 }

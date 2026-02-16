@@ -1,3 +1,5 @@
+import { Logger } from 'src/logger';
+
 import { ProductBitbucket } from '../../../../atlclients/authInfo';
 import {
     Pipeline,
@@ -10,12 +12,7 @@ import { AnalyticsApi } from '../../../analyticsApi';
 import { CommonActionType } from '../../../ipc/fromUI/common';
 import { PipelineSummaryAction, PipelineSummaryActionType } from '../../../ipc/fromUI/pipelineSummary';
 import { CommonMessage } from '../../../ipc/toUI/common';
-import {
-    PipelineSummaryMessage,
-    PipelineSummaryMessageType,
-    PipelineSummaryResponse,
-} from '../../../ipc/toUI/pipelineSummary';
-import { Logger } from '../../../logger';
+import { PipelineSummaryMessage, PipelineSummaryMessageType } from '../../../ipc/toUI/pipelineSummary';
 import { MessagePoster, WebviewController } from '../webviewController';
 import { PipelinesSummaryActionApi } from './pipelinesSummaryActionApi';
 
@@ -38,7 +35,7 @@ export class PipelineSummaryWebviewController implements WebviewController<Pipel
         this.steps = [];
     }
 
-    private postMessage(message: PipelineSummaryMessage | PipelineSummaryResponse | CommonMessage) {
+    private postMessage(message: PipelineSummaryMessage | CommonMessage) {
         this.messagePoster(message);
     }
 

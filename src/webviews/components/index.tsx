@@ -1,7 +1,7 @@
 import './App.css';
 
 import * as React from 'react';
-import * as ReactDOM from 'react-dom';
+import * as ReactDOM from 'react-dom/client';
 
 // @ts-ignore
 // __webpack_public_path__ is used to set the public path for the js files - https://webpack.js.org/guides/public-path/
@@ -18,9 +18,6 @@ const routes: Record<string, any> = {
         () =>
             import(/* webpackChunkName: "atlascodeCreateIssueScreen" */ './issue/create-issue-screen/CreateIssuePage'),
     ),
-    startWorkOnIssueScreen: React.lazy(
-        () => import(/* webpackChunkName: "startWorkOnIssueScreen" */ './issue/StartWorkPage'),
-    ),
     atlascodeCreateIssueProblemsScreen: React.lazy(
         () => import(/* webpackChunkName: "atlascodeCreateIssueProblemsScreen" */ './issue/CreateIssueProblems'),
     ),
@@ -33,6 +30,12 @@ window.addEventListener(
     'error',
     (ee: ErrorEvent) => {
         const targetEL = ee.target as HTMLElement;
+
+        // Prevent re-processing the same image and avoid loops if the fallback fails
+        if (targetEL.getAttribute('src') === 'images/no-image.svg') {
+            return;
+        }
+
         if (ee && targetEL && targetEL.nodeName === 'IMG') {
             const originalSrc = targetEL.getAttribute('src');
             targetEL.setAttribute('atlascode-original-src', `${originalSrc}`);
@@ -56,4 +59,5 @@ const App = () => {
     );
 };
 
-ReactDOM.render(<App />, root);
+const reactRoot = ReactDOM.createRoot(root);
+reactRoot.render(<App />);

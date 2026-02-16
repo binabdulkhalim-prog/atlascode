@@ -7,35 +7,49 @@ import {
     JsdInternalCommentVisibility,
     User,
 } from '@atlassianlabs/jira-pi-common-models';
-import { Box } from '@material-ui/core';
+import { Box } from '@mui/material';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import React from 'react';
 import { DetailedSiteInfo } from 'src/atlclients/authInfo';
 
+import { AdfAwareContent } from '../../../AdfAwareContent';
 import { RenderedContent } from '../../../RenderedContent';
+import { convertAdfToWikimarkup, convertWikimarkupToAdf } from '../../common/adfToWikimarkup';
+import { AtlascodeMentionProvider } from '../../common/AtlaskitEditor/AtlascodeMentionsProvider';
+import AtlaskitEditor from '../../common/AtlaskitEditor/AtlaskitEditor';
 import JiraIssueTextAreaEditor from '../../common/JiraIssueTextArea';
+import { useEditorState } from '../EditorStateContext';
+import { useEditorForceClose } from '../hooks/useEditorForceClose';
 
-type IssueCommentComponentProps = {
+export type IssueCommentComponentProps = {
     siteDetails: DetailedSiteInfo;
     currentUser: User;
     comments: JiraComment[];
     isServiceDeskProject: boolean;
-    onSave: (commentBody: string, commentId?: string, restriction?: CommentVisibility) => void;
-    onCreate: (commentBody: string, restriction?: CommentVisibility) => void;
+    onSave: (commentBody: any, commentId?: string, restriction?: CommentVisibility) => void; // Can be string or ADF object
+    onCreate: (commentBody: any, restriction?: CommentVisibility) => void; // Can be string or ADF object
     fetchUsers: (input: string) => Promise<any[]>;
     fetchImage: (url: string) => Promise<string>;
     onDelete: (commentId: string) => void;
-    isRteEnabled?: boolean;
+    commentText: string;
+    onCommentTextChange: (text: string) => void;
+    isEditingComment: boolean;
+    onEditingCommentChange: (editing: boolean) => void;
+    isAtlaskitEditorEnabled?: boolean;
+    mentionProvider: AtlascodeMentionProvider;
+    handleEditorFocus: (isFocused: boolean) => void;
 };
 const CommentComponent: React.FC<{
     siteDetails: DetailedSiteInfo;
     comment: JiraComment;
-    onSave: (t: string, commentId?: string, restriction?: CommentVisibility) => void;
+    onSave: (t: any, commentId?: string, restriction?: CommentVisibility) => void; // Can be string or ADF object
     fetchImage: (url: string) => Promise<string>;
     onDelete: (commentId: string) => void;
     fetchUsers: (input: string) => Promise<any[]>;
     isServiceDeskProject?: boolean;
-    isRteEnabled?: boolean;
+    isAtlaskitEditorEnabled?: boolean;
+    mentionProvider: AtlascodeMentionProvider;
+    handleEditorFocus: (isFocused: boolean) => void;
 }> = ({
     siteDetails,
     comment,
@@ -44,21 +58,65 @@ const CommentComponent: React.FC<{
     onDelete,
     fetchUsers,
     isServiceDeskProject,
-    isRteEnabled = false,
+    isAtlaskitEditorEnabled,
+    mentionProvider,
+    handleEditorFocus,
 }) => {
-    const [isEditing, setIsEditing] = React.useState(false);
+    const { openEditor, closeEditor, isEditorActive } = useEditorState();
+    const editorId = `edit-comment-${comment.id}` as const;
+    const [localIsEditing, setLocalIsEditing] = React.useState(false);
+    const isEditing = isAtlaskitEditorEnabled ? isEditorActive(editorId) : localIsEditing;
+
+    // Define editor handlers based on feature flag
+    const openEditorHandler = React.useMemo(
+        () => (isAtlaskitEditorEnabled ? () => openEditor(editorId) : () => setLocalIsEditing(true)),
+        [isAtlaskitEditorEnabled, openEditor, editorId],
+    );
+
+    const closeEditorHandler = React.useMemo(
+        () => (isAtlaskitEditorEnabled ? () => closeEditor(editorId) : () => setLocalIsEditing(false)),
+        [isAtlaskitEditorEnabled, closeEditor, editorId],
+    );
     const [isSaving, setIsSaving] = React.useState(false);
     const bodyText = comment.renderedBody ? comment.renderedBody : comment.body;
-    const [commentText, setCommentText] = React.useState(comment.body);
-    const baseActions: JSX.Element[] = [
-        <CommentAction
-            onClick={() => {
-                setIsEditing(true);
-            }}
-        >
-            Edit
-        </CommentAction>,
-    ];
+
+    // Convert comment body to appropriate format for editor
+    const getCommentTextForEditor = React.useCallback(
+        (body: any) => {
+            if (typeof body === 'object' && body.version === 1 && body.type === 'doc') {
+                // For new Atlaskit editor: convert ADF to JSON string
+                if (isAtlaskitEditorEnabled) {
+                    return JSON.stringify(body);
+                }
+                // For legacy editor: convert ADF to WikiMarkup
+                return convertAdfToWikimarkup(body);
+            }
+            return body || '';
+        },
+        [isAtlaskitEditorEnabled],
+    );
+
+    const [commentText, setCommentText] = React.useState(() => getCommentTextForEditor(comment.body));
+    // Update commentText when comment.body changes (after save)
+    React.useEffect(() => {
+        if (!isEditing) {
+            setCommentText(getCommentTextForEditor(comment.body));
+        }
+    }, [comment.body, isEditing, getCommentTextForEditor]);
+
+    // Listen for forced editor close events
+    useEditorForceClose(
+        editorId,
+        React.useCallback(() => {
+            // Reset comment editor state when it's forcibly closed
+            setCommentText(getCommentTextForEditor(comment.body));
+            setIsSaving(false);
+            closeEditorHandler();
+        }, [comment.body, closeEditorHandler, getCommentTextForEditor]),
+        isAtlaskitEditorEnabled,
+    );
+
+    const baseActions: JSX.Element[] = [<CommentAction onClick={openEditorHandler}>Edit</CommentAction>];
 
     const actions =
         comment.author.accountId === siteDetails.userId
@@ -94,30 +152,59 @@ const CommentComponent: React.FC<{
             content={
                 <>
                     {isEditing && !isSaving ? (
-                        <JiraIssueTextAreaEditor
-                            value={commentText}
-                            onChange={(e: string) => {
-                                setCommentText(e);
-                            }}
-                            onSave={() => {
-                                setIsSaving(true);
-                                setIsEditing(false);
-                                onSave(commentText, comment.id, undefined);
-                            }}
-                            onCancel={() => {
-                                setIsSaving(false);
-                                setIsEditing(false);
-                                setCommentText(comment.body);
-                            }}
-                            fetchUsers={fetchUsers}
-                            isServiceDeskProject={isServiceDeskProject}
-                            onInternalCommentSave={() => {
-                                setIsSaving(false);
-                                setIsEditing(false);
-                                onSave(commentText, comment.id, JsdInternalCommentVisibility);
-                            }}
-                            featureGateEnabled={isRteEnabled}
-                        />
+                        isAtlaskitEditorEnabled ? (
+                            <AtlaskitEditor
+                                defaultValue={commentText}
+                                onSave={(content) => {
+                                    setIsSaving(true);
+                                    closeEditorHandler();
+                                    onSave(content, comment.id, undefined);
+                                }}
+                                onCancel={() => {
+                                    setCommentText(comment.body);
+                                    setIsSaving(false);
+                                    closeEditorHandler();
+                                }}
+                                onContentChange={(content) => {
+                                    setCommentText(content);
+                                }}
+                                mentionProvider={Promise.resolve(mentionProvider)}
+                                onFocus={() => handleEditorFocus(true)}
+                                onBlur={() => handleEditorFocus(false)}
+                            />
+                        ) : (
+                            <JiraIssueTextAreaEditor
+                                value={commentText}
+                                onChange={(e: string) => {
+                                    setCommentText(e);
+                                }}
+                                onSave={() => {
+                                    setIsSaving(true);
+                                    closeEditorHandler();
+                                    // Convert WikiMarkup to ADF before saving (API v3 requires ADF)
+                                    const adfContent = convertWikimarkupToAdf(commentText);
+                                    onSave(adfContent, comment.id, undefined);
+                                }}
+                                onCancel={() => {
+                                    setIsSaving(false);
+                                    closeEditorHandler();
+                                    setCommentText(getCommentTextForEditor(comment.body));
+                                }}
+                                onInternalCommentSave={() => {
+                                    setIsSaving(false);
+                                    closeEditorHandler();
+                                    // Convert WikiMarkup to ADF before saving (API v3 requires ADF)
+                                    const adfContent = convertWikimarkupToAdf(commentText);
+                                    onSave(adfContent, comment.id, JsdInternalCommentVisibility);
+                                }}
+                                fetchUsers={fetchUsers}
+                                isServiceDeskProject={isServiceDeskProject}
+                                onEditorFocus={() => handleEditorFocus(true)}
+                                onEditorBlur={() => handleEditorFocus(false)}
+                            />
+                        )
+                    ) : isAtlaskitEditorEnabled ? (
+                        <AdfAwareContent content={comment.body} mentionProvider={mentionProvider} />
                     ) : (
                         <RenderedContent html={bodyText} fetchImage={fetchImage} />
                     )}
@@ -134,16 +221,70 @@ const CommentComponent: React.FC<{
 const AddCommentComponent: React.FC<{
     fetchUsers: (i: string) => Promise<any[]>;
     user: User;
-    onCreate: (t: string, restriction?: CommentVisibility) => void;
+    onCreate: (t: any, restriction?: CommentVisibility) => void; // Can be string or ADF object
     isServiceDeskProject?: boolean;
-    isRteEnabled?: boolean;
-}> = ({ fetchUsers, user, onCreate, isServiceDeskProject, isRteEnabled = false }) => {
-    const [commentText, setCommentText] = React.useState('');
-    const [isEditing, setIsEditing] = React.useState(false);
+    isAtlaskitEditorEnabled?: boolean;
+    commentText: string;
+    setCommentText: (text: string) => void;
+    isEditing: boolean;
+    setIsEditing: (editing: boolean) => void;
+    mentionProvider: AtlascodeMentionProvider;
+    handleEditorFocus: (isFocused: boolean) => void;
+}> = ({
+    fetchUsers,
+    user,
+    onCreate,
+    isServiceDeskProject,
+    isAtlaskitEditorEnabled,
+    commentText,
+    setCommentText,
+    isEditing,
+    setIsEditing,
+    mentionProvider,
+    handleEditorFocus,
+}) => {
+    const { openEditor, closeEditor } = useEditorState();
+
+    // Define editor handlers based on feature flag
+    const openEditorHandler = React.useMemo(
+        () =>
+            isAtlaskitEditorEnabled
+                ? () => {
+                      openEditor('add-comment');
+                      setIsEditing(true);
+                  }
+                : () => setIsEditing(true),
+        [isAtlaskitEditorEnabled, openEditor, setIsEditing],
+    );
+
+    const closeEditorHandler = React.useMemo(
+        () =>
+            isAtlaskitEditorEnabled
+                ? () => {
+                      closeEditor('add-comment');
+                      setIsEditing(false);
+                  }
+                : () => setIsEditing(false),
+        [isAtlaskitEditorEnabled, closeEditor, setIsEditing],
+    );
+
+    // Listen for forced editor close events
+    useEditorForceClose(
+        'add-comment',
+        React.useCallback(() => {
+            // Reset add comment editor state when it's forcibly closed
+            setCommentText('');
+            closeEditorHandler();
+        }, [closeEditorHandler, setCommentText]),
+        isAtlaskitEditorEnabled,
+    );
 
     return (
         <Box style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
-            <Box style={{ display: 'flex', flexDirection: 'row', alignItems: isEditing ? 'start' : 'center' }}>
+            <Box
+                data-testid="issue.new-comment"
+                style={{ display: 'flex', flexDirection: 'row', alignItems: isEditing ? 'start' : 'center' }}
+            >
                 <Box style={{ marginRight: '8px', marginTop: isEditing ? '4px' : '0px' }}>
                     <Avatar
                         src={user.avatarUrls['48x48']}
@@ -160,37 +301,76 @@ const AddCommentComponent: React.FC<{
                                 color: 'var(--vscode-input-placeholderForeground) !important',
                             },
                         }}
-                        onClick={() => {
-                            setIsEditing(true);
-                        }}
+                        onClick={openEditorHandler}
                         placeholder="Add a comment..."
                     />
+                ) : isAtlaskitEditorEnabled ? (
+                    <Box sx={{ width: '100%' }}>
+                        <AtlaskitEditor
+                            defaultValue={commentText}
+                            onSave={(content) => {
+                                // For v3 API: content is ADF object, not string
+                                // Check if it's empty by checking the content structure
+                                const isEmpty =
+                                    !content ||
+                                    (typeof content === 'object' &&
+                                        (!content.content ||
+                                            content.content.length === 0 ||
+                                            (content.content.length === 1 &&
+                                                content.content[0].type === 'paragraph' &&
+                                                (!content.content[0].content ||
+                                                    content.content[0].content.length === 0)))) ||
+                                    (typeof content === 'string' && content.trim() === '');
+
+                                if (!isEmpty) {
+                                    onCreate(content, undefined);
+                                    setCommentText('');
+                                    closeEditorHandler();
+                                }
+                            }}
+                            onCancel={() => {
+                                setCommentText('');
+                                closeEditorHandler();
+                            }}
+                            onContentChange={(content) => {
+                                setCommentText(content);
+                            }}
+                            mentionProvider={Promise.resolve(mentionProvider)}
+                            onFocus={() => handleEditorFocus(true)}
+                            onBlur={() => handleEditorFocus(false)}
+                        />
+                    </Box>
                 ) : (
                     <JiraIssueTextAreaEditor
                         value={commentText}
                         onChange={(e: string) => setCommentText(e)}
                         onSave={(i: string) => {
                             if (i !== '') {
-                                onCreate(i, undefined);
+                                // Convert WikiMarkup to ADF before saving (API v3 requires ADF)
+                                const adfContent = convertWikimarkupToAdf(i);
+                                onCreate(adfContent, undefined);
                                 setCommentText('');
-                                setIsEditing(false);
+                                closeEditorHandler();
                             }
+                        }}
+                        onInternalCommentSave={() => {
+                            // Convert WikiMarkup to ADF before saving (API v3 requires ADF)
+                            const adfContent = convertWikimarkupToAdf(commentText);
+                            onCreate(adfContent, JsdInternalCommentVisibility);
+                            setCommentText('');
+                            closeEditorHandler();
                         }}
                         onCancel={() => {
                             setCommentText('');
-                            setIsEditing(false);
+                            closeEditorHandler();
                         }}
                         onEditorFocus={() => {
-                            setIsEditing(true);
+                            openEditorHandler();
+                            handleEditorFocus(true);
                         }}
+                        onEditorBlur={() => handleEditorFocus(false)}
                         fetchUsers={fetchUsers}
                         isServiceDeskProject={isServiceDeskProject}
-                        onInternalCommentSave={() => {
-                            onCreate(commentText, JsdInternalCommentVisibility);
-                            setCommentText('');
-                            setIsEditing(false);
-                        }}
-                        featureGateEnabled={isRteEnabled}
                     />
                 )}
             </Box>
@@ -207,15 +387,31 @@ export const IssueCommentComponent: React.FC<IssueCommentComponentProps> = ({
     fetchUsers,
     fetchImage,
     onDelete,
-    isRteEnabled = false,
+    commentText,
+    onCommentTextChange,
+    isEditingComment,
+    onEditingCommentChange,
+    isAtlaskitEditorEnabled,
+    mentionProvider,
+    handleEditorFocus,
 }) => {
     return (
-        <Box style={{ display: 'flex', flexDirection: 'column', paddingTop: '8px' }}>
+        <Box
+            data-testid="issue.comments-section"
+            style={{ display: 'flex', flexDirection: 'column', paddingTop: '8px', gap: '16px' }}
+        >
             <AddCommentComponent
                 fetchUsers={fetchUsers}
                 user={currentUser}
                 onCreate={onCreate}
-                isRteEnabled={isRteEnabled}
+                isServiceDeskProject={isServiceDeskProject}
+                isAtlaskitEditorEnabled={isAtlaskitEditorEnabled}
+                commentText={commentText}
+                setCommentText={onCommentTextChange}
+                isEditing={isEditingComment}
+                setIsEditing={onEditingCommentChange}
+                mentionProvider={mentionProvider}
+                handleEditorFocus={handleEditorFocus}
             />
             {comments
                 .sort((a, b) => (a.created > b.created ? -1 : 1))
@@ -229,7 +425,9 @@ export const IssueCommentComponent: React.FC<IssueCommentComponentProps> = ({
                         onDelete={onDelete}
                         fetchUsers={fetchUsers}
                         isServiceDeskProject={isServiceDeskProject}
-                        isRteEnabled={isRteEnabled}
+                        isAtlaskitEditorEnabled={isAtlaskitEditorEnabled}
+                        mentionProvider={mentionProvider}
+                        handleEditorFocus={handleEditorFocus}
                     />
                 ))}
         </Box>

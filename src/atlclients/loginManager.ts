@@ -1,6 +1,7 @@
+import { Container } from 'src/container';
 import * as vscode from 'vscode';
 
-import { authenticatedEvent, editedEvent } from '../analytics';
+import { aiInstallCompletedEvent, authenticatedEvent, editedEvent } from '../analytics';
 import { AnalyticsClient } from '../analytics-node-client/src/client.min.js';
 import { getAgent, getAxiosInstance } from '../jira/jira-client/providers';
 import { Logger } from '../logger';
@@ -28,7 +29,7 @@ import { BitbucketAuthenticator } from './bitbucketAuthenticator';
 import { JiraAuthentictor as JiraAuthenticator } from './jiraAuthenticator';
 import { OAuthDancer } from './oauthDancer';
 
-const CLOUD_TLD = '.atlassian.net';
+const CLOUD_TLDS = ['.atlassian.net', '.jira.com'];
 
 export class LoginManager {
     private _dancer: OAuthDancer = OAuthDancer.Instance;
@@ -93,6 +94,7 @@ export class LoginManager {
                 recievedAt: resp.receivedAt,
                 user: resp.user,
                 state: AuthInfoState.Valid,
+                scopes: resp.scopes,
             };
 
             const siteDetails = await this.getOAuthSiteDetails(
@@ -102,15 +104,36 @@ export class LoginManager {
                 resp.accessibleResources,
             );
 
-            await Promise.all(
+            const promises = await Promise.all(
                 siteDetails.map(async (siteInfo) => {
+                    // If an API token is already provided for the site, retain it
+                    const tokenAuthInfo = await this._credentialManager.getApiTokenIfExists(siteInfo);
+                    if (
+                        tokenAuthInfo &&
+                        tokenAuthInfo.state === AuthInfoState.Valid &&
+                        tokenAuthInfo.username === oauthInfo.user.email
+                    ) {
+                        // Discard the incoming OAuth info since token is preferred
+                        Logger.debug(`Retaining existing API token for ${siteInfo.host}`);
+                        Container.analyticsApi.fireApiTokenRetainedEvent();
+                        return undefined;
+                    }
+
                     await this._credentialManager.saveAuthInfo(siteInfo, oauthInfo);
-                    this._siteManager.addSites([siteInfo]);
                     authenticatedEvent(siteInfo, isOnboarding, source).then((e) => {
                         this._analyticsClient.sendTrackEvent(e);
                     });
+
+                    return siteInfo;
                 }),
             );
+
+            const sitesToAdd = promises.filter((p) => p !== undefined) as DetailedSiteInfo[];
+
+            // Add all sites at once to prevent race condition
+            await this._siteManager.addSites(sitesToAdd);
+
+            this.fireExplicitSiteChangeEvent(sitesToAdd);
         } catch (e) {
             Logger.error(e, `Error authenticating with provider '${provider}'`);
             vscode.window.showErrorMessage(`There was an error authenticating with provider '${provider}': ${e}`);
@@ -143,12 +166,19 @@ export class LoginManager {
             try {
                 const siteDetails = await this.saveDetailsForSite(site, authInfo);
 
+                // Fire analytics event only for Cloud API token i.e. Rovo Dev auth
+                if (siteDetails.isCloud) {
+                    aiInstallCompletedEvent(siteDetails).then((e) => {
+                        this._analyticsClient.sendTrackEvent(e);
+                    });
+                }
                 authenticatedEvent(siteDetails, isOnboarding, source).then((e) => {
                     this._analyticsClient.sendTrackEvent(e);
                 });
-            } catch (err) {
-                Logger.error(err, `Error authenticating with ${site.product.name}`);
-                return Promise.reject(`Error authenticating with ${site.product.name}: ${err}`);
+
+                this.fireExplicitSiteChangeEvent([siteDetails]);
+            } catch (err: unknown) {
+                return Promise.reject(this.formatServerAuthError(err, site.product.name));
             }
         }
     }
@@ -160,10 +190,53 @@ export class LoginManager {
                 editedEvent(siteDetails).then((e) => {
                     this._analyticsClient.sendTrackEvent(e);
                 });
-            } catch (err) {
-                Logger.error(err, `Error authenticating with ${site.product.name}`);
-                return Promise.reject(`Error authenticating with ${site.product.name}: ${err}`);
+
+                this.fireExplicitSiteChangeEvent([siteDetails]);
+            } catch (err: unknown) {
+                return Promise.reject(this.formatServerAuthError(err, site.product.name));
             }
+        }
+    }
+
+    private formatServerAuthError(err: unknown, productName: string): string {
+        const error = err instanceof Error ? err : new Error(String(err));
+        Logger.error(error, `Error authenticating with ${productName}`);
+
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        if (status === 404) {
+            return `Error authenticating with ${productName}: invalid credentials`;
+        }
+
+        return `Error authenticating with ${productName}: ${error.message}`;
+    }
+
+    private isSiteAddedViaToken(site: DetailedSiteInfo): boolean {
+        return site.isCloud && site.name === site.host && site.contextPath !== undefined;
+    }
+
+    private shouldCleanupTokenSites(siteDetails: DetailedSiteInfo, credentials: AuthInfo): boolean {
+        return siteDetails.isCloud && siteDetails.product.key === ProductJira.key && isBasicAuthInfo(credentials);
+    }
+
+    public async removeTokenConnectedSites(): Promise<void> {
+        const existingSites = this._siteManager.getSitesAvailable(ProductJira);
+        const sitesToRemove = existingSites.filter((site) => this.isSiteAddedViaToken(site));
+
+        if (sitesToRemove.length > 0) {
+            vscode.window.showInformationMessage(
+                'Currently only one Jira site can be connected via API token at a time. The previous Jira site has been disconnected to connect the new one.',
+            );
+        }
+
+        for (const siteToRemove of sitesToRemove) {
+            const oauthSiteConnected = existingSites.find(
+                (existingSite) => existingSite.isCloud && existingSite.name !== existingSite.host,
+            );
+
+            await Container.clientManager.removeClient(siteToRemove);
+            await Container.siteManager.removeSite(siteToRemove, true, true);
+
+            await this.restoreOAuthSiteIfNeeded(siteToRemove, oauthSiteConnected);
         }
     }
 
@@ -251,7 +324,7 @@ export class LoginManager {
             pfxPassphrase: site.pfxPassphrase,
         };
 
-        if (site.host.endsWith(CLOUD_TLD)) {
+        if (CLOUD_TLDS.some((tld) => site.host.endsWith(tld))) {
             // Special case to accomodate for API key login to cloud instances
             siteDetails.isCloud = true;
             siteDetails.userId = json.accountId;
@@ -263,7 +336,7 @@ export class LoginManager {
                 displayName: json.displayName,
                 id: userId,
                 email: json.emailAddress,
-                avatarUrl: json.avatarUrls['48x48'],
+                avatarUrl: json.avatarUrls?.['48x48'] || '',
             };
         } else {
             credentials.user = {
@@ -274,16 +347,68 @@ export class LoginManager {
             };
         }
 
+        // Clean up existing site before connecting new one, as currently we support just one connected with API token site at a time
+        if (this.shouldCleanupTokenSites(siteDetails, credentials)) {
+            await this.removeTokenConnectedSites();
+        }
+
         await this._credentialManager.saveAuthInfo(siteDetails, credentials);
 
-        this._siteManager.addOrUpdateSite(siteDetails);
+        await this._siteManager.addOrUpdateSite(siteDetails);
 
         return siteDetails;
+    }
+
+    private async restoreOAuthSiteIfNeeded(
+        removedSite: DetailedSiteInfo,
+        oauthSiteConnected?: DetailedSiteInfo,
+    ): Promise<void> {
+        if (!oauthSiteConnected || removedSite.name !== removedSite.host || !removedSite.isCloud) {
+            return;
+        }
+
+        try {
+            const oauthAuthInfo = await this._credentialManager.getAuthInfo(oauthSiteConnected, false);
+
+            if (!oauthAuthInfo) {
+                return;
+            }
+
+            const cloudId = await this.fetchCloudSiteId(removedSite.host);
+            const siteName = removedSite.host.split('.')[0];
+
+            const oauthVersion: DetailedSiteInfo = {
+                ...oauthSiteConnected,
+                host: removedSite.host,
+                baseLinkUrl: `https://${removedSite.host}`,
+                baseApiUrl: `https://api.atlassian.com/ex/jira/${cloudId}/rest`,
+                id: cloudId,
+                name: siteName,
+            };
+
+            await this._credentialManager.saveAuthInfo(oauthVersion, oauthAuthInfo);
+            this._siteManager.addSites([oauthVersion]);
+        } catch (error) {
+            Logger.error(error, 'Error restoring OAuth site');
+        }
     }
 
     private async fetchCloudSiteId(host: string): Promise<string> {
         const response = await fetch(`https://${host}/_edge/tenant_info`);
         const data = await response.json();
         return data.cloudId;
+    }
+
+    private fireExplicitSiteChangeEvent(siteDetails: DetailedSiteInfo[]): void {
+        const jiraSites = siteDetails.filter((site) => site.product.key === 'jira');
+
+        if (jiraSites.length > 0) {
+            this._siteManager.fireSitesAvailableChangeEvent({
+                sites: jiraSites,
+                newSites: jiraSites,
+                product: jiraSites[0].product,
+                primarySite: this._siteManager.primarySite,
+            });
+        }
     }
 }

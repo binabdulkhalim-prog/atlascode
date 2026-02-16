@@ -11,8 +11,8 @@ import {
     workspace,
 } from 'vscode';
 
-import { ConfigNamespace, JiraCreateSiteAndProjectKey } from '../constants';
-import { SiteIdAndProjectKey } from './model';
+import { ConfigNamespace, JiraPreSelectedCreateKey } from '../constants';
+import { LastCreatePreSelectedValues } from './model';
 
 /*
 Configuration is a helper to manage configuration changes in various parts of the system.
@@ -35,7 +35,7 @@ export class Configuration extends Disposable {
         super(() => this.dispose());
     }
 
-    dispose() {
+    override dispose() {
         this._onDidChange.dispose();
     }
 
@@ -87,7 +87,7 @@ export class Configuration extends Disposable {
         return inspect ? inspect : { key: '' };
     }
 
-    // update does what it sounds like
+    /** Use `updateEffective` unless you have a strong reason to change a specific config target value. */
     public async update(
         section: string,
         value: any,
@@ -108,8 +108,8 @@ export class Configuration extends Disposable {
             .update(section, value, target);
     }
 
-    async setLastCreateSiteAndProject(siteAndProject?: SiteIdAndProjectKey) {
-        await this.updateEffective(JiraCreateSiteAndProjectKey, siteAndProject, null, true);
+    async setLastCreateSiteAndProject(siteAndProject?: LastCreatePreSelectedValues) {
+        await this.updateEffective(JiraPreSelectedCreateKey, siteAndProject, null, true);
     }
 
     // this tries to figure out where the current value is set and update it there
@@ -132,7 +132,10 @@ export class Configuration extends Disposable {
             return configuration.update(section, value, ConfigurationTarget.Workspace);
         }
 
-        if (inspect.globalValue === value || (inspect.globalValue === undefined && !force)) {
+        if (
+            inspect.globalValue === value ||
+            (inspect.globalValue === undefined && inspect.defaultValue === value && !force)
+        ) {
             return undefined;
         }
 

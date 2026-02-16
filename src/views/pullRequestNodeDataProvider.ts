@@ -11,7 +11,7 @@ import { Container } from '../container';
 import { BaseTreeDataProvider } from './Explorer';
 import { GitContentProvider } from './gitContentProvider';
 import { AbstractBaseNode } from './nodes/abstractBaseNode';
-import { emptyBitbucketNodes, loginToBitbucketMessageNode } from './nodes/definedNodes';
+import { emptyBitbucketNodes } from './nodes/definedNodes';
 import { SimpleNode } from './nodes/simpleNode';
 import { CreatePullRequestNode, PullRequestFilters, PullRequestHeaderNode } from './pullrequest/headerNode';
 import { DescriptionNode, PullRequestTitlesNode } from './pullrequest/pullRequestNode';
@@ -158,7 +158,7 @@ export class PullRequestNodeDataProvider extends BaseTreeDataProvider {
         }
     }
 
-    async refresh() {
+    override async refresh() {
         await this.updateChildren();
         this._onDidChangeTreeData.fire(null);
     }
@@ -217,7 +217,7 @@ export class PullRequestNodeDataProvider extends BaseTreeDataProvider {
         this._onDidChangeTreeData.fire(null);
     }
 
-    async getTreeItem(element: AbstractBaseNode): Promise<TreeItem> {
+    override async getTreeItem(element: AbstractBaseNode): Promise<TreeItem> {
         return element.getTreeItem();
     }
 
@@ -226,7 +226,8 @@ export class PullRequestNodeDataProvider extends BaseTreeDataProvider {
             viewScreenEvent('pullRequestsTreeViewUnauthenticatedMessage', undefined, ProductBitbucket).then((event) =>
                 Container.analyticsClient.sendScreenEvent(event),
             );
-            return [loginToBitbucketMessageNode];
+            // Show viewsWelcome with login button if user is not authenticated
+            return [];
         }
 
         const repos = this.ctx.getBitbucketRepositories();
@@ -247,7 +248,7 @@ export class PullRequestNodeDataProvider extends BaseTreeDataProvider {
         return [createPRNode, this._headerNode, ...Array.from(this._childrenMap!.values())];
     }
 
-    dispose() {
+    override dispose() {
         if (this._childrenMap) {
             this._childrenMap.forEach((node) => node.dispose());
         }

@@ -4,12 +4,13 @@ import { Event, window } from 'vscode';
 import { loggedOutEvent } from '../analytics';
 import { CommandContext, setCommandContext } from '../commandContext';
 import { Container } from '../container';
-import { Logger } from '../logger';
 import { keychain } from '../util/keychain';
+import { Time } from '../util/time';
 import {
     AuthChangeType,
     AuthInfo,
     AuthInfoState,
+    BasicAuthInfo,
     DetailedSiteInfo,
     OAuthInfo,
     ProductBitbucket,
@@ -41,8 +42,13 @@ jest.mock('../container', () => ({
                 store: jest.fn(),
                 delete: jest.fn(),
             },
+            globalState: {
+                get: jest.fn(),
+                update: jest.fn(),
+            },
         },
         siteManager: {
+            getSitesAvailable: jest.fn(),
             getSiteForId: jest.fn(),
             removeSite: jest.fn(),
         },
@@ -115,16 +121,6 @@ describe('CredentialManager', () => {
         state: AuthInfoState.Valid,
     };
 
-    const mockOAuthAuthInfo: OAuthInfo = {
-        access: 'oauth-access-token',
-        refresh: 'refresh-token',
-        expirationDate: Date.now() + 3600000, // 1 hour in the future
-        recievedAt: Date.now(),
-        iat: Date.now(),
-        user: { id: 'oauth-user-id', displayName: 'OAuth User', email: 'oauth@example.com', avatarUrl: '' },
-        state: AuthInfoState.Valid,
-    };
-
     beforeEach(() => {
         jest.clearAllMocks();
         mockAnalyticsClient = {
@@ -132,7 +128,7 @@ describe('CredentialManager', () => {
         };
 
         // Create a new instance for each test
-        credentialManager = new CredentialManager(mockAnalyticsClient);
+        credentialManager = new CredentialManager(Container.context, mockAnalyticsClient);
 
         // Mock the event emitter
         (credentialManager as any)._onDidAuthChange = {
@@ -146,6 +142,24 @@ describe('CredentialManager', () => {
         it('should initialize memory store', () => {
             expect((credentialManager as any)._memStore.has(ProductJira.key)).toBeTruthy();
             expect((credentialManager as any)._memStore.has(ProductBitbucket.key)).toBeTruthy();
+        });
+    });
+
+    describe('dispose', () => {
+        it('should clear memory store and dispose event emitter', () => {
+            const memStore = (credentialManager as any)._memStore;
+            const eventEmitter = (credentialManager as any)._onDidAuthChange;
+
+            // Add some data to memory store
+            memStore.get(ProductJira.key).set('test-id', mockAuthInfo);
+
+            // Verify data exists before dispose
+            expect(memStore.get(ProductJira.key).size).toBe(1);
+
+            credentialManager.dispose();
+
+            // After dispose, the clear() method should have been called
+            expect(eventEmitter.dispose).toHaveBeenCalled();
         });
     });
 
@@ -195,7 +209,88 @@ describe('CredentialManager', () => {
             await credentialManager.getAuthInfo(mockJiraSite);
 
             expect(Container.clientManager.removeClient).toHaveBeenCalledWith(mockJiraSite);
-            expect(Container.siteManager.removeSite).toHaveBeenCalledWith(mockJiraSite);
+            expect(Container.siteManager.removeSite).toHaveBeenCalledWith(mockJiraSite, false, false);
+        });
+
+        it('should return non-OAuth auth info without token refresh', async () => {
+            const nonOAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+            };
+
+            (Container.context.secrets.get as jest.Mock).mockResolvedValue(JSON.stringify(nonOAuthInfo));
+
+            const result = await credentialManager.getAuthInfo(mockJiraSite);
+
+            expect(result).toEqual(nonOAuthInfo);
+        });
+
+        it('should return OAuth info without refresh when token has plenty of time remaining', async () => {
+            const futureExpirationTime = Date.now() + 20 * Time.MINUTES; // Well beyond grace period
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'access-token',
+                refresh: 'refresh-token',
+                expirationDate: futureExpirationTime,
+                recievedAt: Date.now(),
+            };
+
+            (Container.context.secrets.get as jest.Mock).mockResolvedValue(JSON.stringify(oauthInfo));
+
+            const result = await credentialManager.getAuthInfo(mockJiraSite);
+
+            expect(result).toEqual(oauthInfo);
+        });
+
+        it('should handle OAuth info without expiration date by attempting refresh', async () => {
+            const oauthInfoNoExpiration: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'access-token',
+                refresh: 'refresh-token',
+                recievedAt: Date.now(),
+            };
+
+            // Mock initial fetch from secret storage
+            (Container.context.secrets.get as jest.Mock)
+                .mockResolvedValueOnce(JSON.stringify(oauthInfoNoExpiration))
+                .mockResolvedValueOnce(
+                    JSON.stringify({ ...oauthInfoNoExpiration, expirationDate: Date.now() + Time.HOURS }),
+                );
+
+            // Mock negotiator behavior - this process is not responsible
+            const mockNegotiatorGet = jest.fn().mockReturnValue(false);
+            const mockNegotiatorSet = jest.fn();
+            const mockNegotiatorRequest = jest.fn().mockResolvedValue(undefined);
+            (Container.context.globalState.get as jest.Mock).mockImplementation(mockNegotiatorGet);
+            (Container.context.globalState.update as jest.Mock).mockImplementation(mockNegotiatorSet);
+
+            // Mock the negotiator's request method
+            const mockNegotiator = {
+                thisIsTheResponsibleProcess: () => false,
+                requestTokenRefreshForSite: mockNegotiatorRequest,
+            };
+            Object.defineProperty(credentialManager, 'negotiator', {
+                get: () => mockNegotiator,
+                configurable: true,
+            });
+
+            // Mock setTimeout to resolve immediately
+            const originalSetTimeout = global.setTimeout;
+            global.setTimeout = jest.fn().mockImplementation((callback) => callback()) as any;
+
+            const result = await credentialManager.getAuthInfo(mockJiraSite);
+
+            expect(mockNegotiatorRequest).toHaveBeenCalledWith(JSON.stringify(mockJiraSite));
+            expect(result).toEqual(
+                expect.objectContaining({
+                    ...oauthInfoNoExpiration,
+                    expirationDate: expect.any(Number),
+                }),
+            );
+
+            global.setTimeout = originalSetTimeout;
         });
     });
 
@@ -231,76 +326,474 @@ describe('CredentialManager', () => {
             jiraStore.set(mockJiraSite.credentialId, mockAuthInfo);
 
             // Mock getAuthInfo to return the existing info
-            jest.spyOn(credentialManager, 'getAuthInfo').mockResolvedValue(mockAuthInfo);
+            jest.spyOn(credentialManager as any, 'getAuthInfoForProductAndCredentialId').mockResolvedValue(
+                mockAuthInfo,
+            );
 
             await credentialManager.saveAuthInfo(mockJiraSite, mockAuthInfo);
 
             expect(Container.context.secrets.store).not.toHaveBeenCalled();
             expect(mockFireEvent).not.toHaveBeenCalled();
         });
-    });
 
-    describe('refreshAccessToken', () => {
-        it('should refresh OAuth tokens', async () => {
-            // Setup OAuth auth info
-            const memStore = (credentialManager as any)._memStore;
-            const jiraStore = memStore.get(ProductJira.key);
-            jiraStore.set(mockJiraSite.credentialId, mockOAuthAuthInfo);
+        it('should extract expiration date from JWT token when saving OAuth info', async () => {
+            // Create a valid JWT token with expiration
+            const expTimestamp = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now in seconds
+            const payload = { exp: expTimestamp, iat: Math.floor(Date.now() / 1000) };
+            const header = { alg: 'HS256', typ: 'JWT' };
 
-            // Mock the refresher
-            const newTokens = {
-                accessToken: 'new-access-token',
-                refreshToken: 'new-refresh-token',
-                expiration: Date.now() + 7200000,
-                receivedAt: Date.now(),
-                iat: Date.now(),
+            const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64');
+            const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64');
+            const signature = 'signature';
+            const jwtToken = `${encodedHeader}.${encodedPayload}.${signature}`;
+
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: jwtToken,
+                refresh: 'refresh-token',
+                recievedAt: Date.now(),
             };
 
-            (credentialManager as any)._refresher.getNewTokens = jest.fn().mockResolvedValue({
-                tokens: newTokens,
-                shouldInvalidate: false,
-            });
+            await credentialManager.saveAuthInfo(mockJiraSite, oauthInfo);
 
-            // Mock saveAuthInfo
-            const saveAuthInfoSpy = jest.spyOn(credentialManager, 'saveAuthInfo').mockResolvedValue();
-
-            await credentialManager.refreshAccessToken(mockJiraSite);
-
-            expect(saveAuthInfoSpy).toHaveBeenCalled();
-            const savedAuthInfo = saveAuthInfoSpy.mock.calls[0][1] as OAuthInfo;
-            expect(savedAuthInfo.access).toEqual('new-access-token');
-            expect(savedAuthInfo.refresh).toEqual('new-refresh-token');
+            // Verify that the saved info has the expiration date extracted from JWT
+            const savedInfoCall = (Container.context.secrets.store as jest.Mock).mock.calls[0];
+            const savedInfo = JSON.parse(savedInfoCall[1]);
+            expect(savedInfo.expirationDate).toBe(expTimestamp * 1000);
         });
 
-        it('should invalidate auth info if refresh fails', async () => {
-            // Setup OAuth auth info
-            const memStore = (credentialManager as any)._memStore;
-            const jiraStore = memStore.get(ProductJira.key);
-            jiraStore.set(mockJiraSite.credentialId, mockOAuthAuthInfo);
+        it('should handle JWT token without expiration claim', async () => {
+            const payload = { iat: Math.floor(Date.now() / 1000), sub: 'user-id' };
+            const header = { alg: 'HS256', typ: 'JWT' };
 
-            // Mock the refresher to fail
-            (credentialManager as any)._refresher.getNewTokens = jest.fn().mockResolvedValue({
-                tokens: null,
-                shouldInvalidate: true,
-            });
+            const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64');
+            const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64');
+            const signature = 'signature';
+            const jwtToken = `${encodedHeader}.${encodedPayload}.${signature}`;
 
-            // Mock saveAuthInfo
-            const saveAuthInfoSpy = jest.spyOn(credentialManager, 'saveAuthInfo').mockResolvedValue();
+            const baseTime = Date.now();
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: jwtToken,
+                refresh: 'refresh-token',
+                recievedAt: baseTime,
+            };
 
-            await credentialManager.refreshAccessToken(mockJiraSite);
+            await credentialManager.saveAuthInfo(mockJiraSite, oauthInfo);
 
-            expect(saveAuthInfoSpy).toHaveBeenCalled();
-            const savedAuthInfo = saveAuthInfoSpy.mock.calls[0][1];
-            expect(savedAuthInfo.state).toEqual(AuthInfoState.Invalid);
+            // Should fall back to using recievedAt + 1 hour
+            const savedInfoCall = (Container.context.secrets.store as jest.Mock).mock.calls[0];
+            const savedInfo = JSON.parse(savedInfoCall[1]);
+            expect(savedInfo.expirationDate).toBe(baseTime + Time.HOURS);
         });
 
-        it('should return undefined for non-OAuth credentials', async () => {
-            // Setup non-OAuth auth info
-            const memStore = (credentialManager as any)._memStore;
-            const jiraStore = memStore.get(ProductJira.key);
-            jiraStore.set(mockJiraSite.credentialId, mockAuthInfo);
+        it('should handle invalid JWT token format', async () => {
+            const baseTime = Date.now();
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'invalid-jwt-format', // Not a valid JWT
+                refresh: 'refresh-token',
+                recievedAt: baseTime,
+            };
 
-            const result = await credentialManager.refreshAccessToken(mockJiraSite);
+            await credentialManager.saveAuthInfo(mockJiraSite, oauthInfo);
+
+            // Should fall back to using recievedAt + 1 hour
+            const savedInfoCall = (Container.context.secrets.store as jest.Mock).mock.calls[0];
+            const savedInfo = JSON.parse(savedInfoCall[1]);
+            expect(savedInfo.expirationDate).toBe(baseTime + Time.HOURS);
+        });
+
+        it('should handle JWT with malformed payload', async () => {
+            const encodedHeader = Buffer.from('{"alg":"HS256"}').toString('base64');
+            const invalidJsonPayload = Buffer.from('invalid-json').toString('base64');
+            const signature = 'signature';
+            const jwtToken = `${encodedHeader}.${invalidJsonPayload}.${signature}`;
+
+            const baseTime = Date.now();
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: jwtToken,
+                refresh: 'refresh-token',
+                recievedAt: baseTime,
+            };
+
+            await credentialManager.saveAuthInfo(mockJiraSite, oauthInfo);
+
+            // Should fall back to using recievedAt + 1 hour
+            const savedInfoCall = (Container.context.secrets.store as jest.Mock).mock.calls[0];
+            const savedInfo = JSON.parse(savedInfoCall[1]);
+            expect(savedInfo.expirationDate).toBe(baseTime + Time.HOURS);
+        });
+
+        it('should prefer iat time over recievedAt for fallback expiration', async () => {
+            const iatTime = Date.now() - 30 * Time.MINUTES;
+            const receivedTime = Date.now();
+
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'invalid-jwt-token',
+                refresh: 'refresh-token',
+                iat: iatTime,
+                recievedAt: receivedTime,
+            };
+
+            await credentialManager.saveAuthInfo(mockJiraSite, oauthInfo);
+
+            const savedInfoCall = (Container.context.secrets.store as jest.Mock).mock.calls[0];
+            const savedInfo = JSON.parse(savedInfoCall[1]);
+            expect(savedInfo.expirationDate).toBe(iatTime + Time.HOURS);
+        });
+
+        it('should not overwrite existing expiration date', async () => {
+            const existingExpiration = Date.now() + 2 * Time.HOURS;
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'any-token',
+                refresh: 'refresh-token',
+                expirationDate: existingExpiration,
+                recievedAt: Date.now(),
+            };
+
+            await credentialManager.saveAuthInfo(mockJiraSite, oauthInfo);
+
+            const savedInfoCall = (Container.context.secrets.store as jest.Mock).mock.calls[0];
+            const savedInfo = JSON.parse(savedInfoCall[1]);
+            expect(savedInfo.expirationDate).toBe(existingExpiration);
+        });
+
+        it('should handle JWT with zero exp value', async () => {
+            const payload = { exp: 0, iat: Math.floor(Date.now() / 1000) };
+            const header = { alg: 'HS256', typ: 'JWT' };
+
+            const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64');
+            const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64');
+            const signature = 'signature';
+            const jwtToken = `${encodedHeader}.${encodedPayload}.${signature}`;
+
+            const baseTime = Date.now();
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: jwtToken,
+                refresh: 'refresh-token',
+                recievedAt: baseTime,
+            };
+
+            await credentialManager.saveAuthInfo(mockJiraSite, oauthInfo);
+
+            // Should fall back to using recievedAt + 1 hour when exp is 0
+            const savedInfoCall = (Container.context.secrets.store as jest.Mock).mock.calls[0];
+            const savedInfo = JSON.parse(savedInfoCall[1]);
+            expect(savedInfo.expirationDate).toBe(baseTime + Time.HOURS);
+        });
+
+        it('should not modify non-OAuth auth info', async () => {
+            const nonOAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+            };
+
+            await credentialManager.saveAuthInfo(mockJiraSite, nonOAuthInfo);
+
+            // Verify that non-OAuth info is saved without modification
+            const savedInfoCall = (Container.context.secrets.store as jest.Mock).mock.calls[0];
+            const savedInfo = JSON.parse(savedInfoCall[1]);
+            expect(savedInfo).toEqual(nonOAuthInfo);
+            expect(savedInfo.expirationDate).toBeUndefined();
+        });
+    });
+
+    describe('checkScopes', () => {
+        const mockCloudSite = expansionCastTo<DetailedSiteInfo>({
+            id: 'cloud-site-id',
+            name: 'Cloud Site',
+            product: ProductJira,
+            baseApiUrl: 'https://test.atlassian.net/api',
+            baseLinkUrl: 'https://test.atlassian.net',
+            credentialId: 'cloud-credential-id',
+            host: 'test.atlassian.net',
+        });
+
+        const mockServerSite = expansionCastTo<DetailedSiteInfo>({
+            id: 'server-site-id',
+            name: 'Server Site',
+            product: ProductJira,
+            baseApiUrl: 'https://jira.example.com/api',
+            baseLinkUrl: 'https://jira.example.com',
+            credentialId: 'server-credential-id',
+            host: 'jira.example.com',
+        });
+
+        beforeEach(() => {
+            jest.clearAllMocks();
+        });
+
+        it('should return undefined for non-cloud sites', async () => {
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(mockAuthInfo);
+
+            const result = await credentialManager.checkScopes(mockServerSite, ['read:jira-work']);
+
+            expect(result).toBeUndefined();
+        });
+
+        it('should return undefined when no auth info is available', async () => {
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(undefined);
+
+            const result = await credentialManager.checkScopes(mockCloudSite, ['read:jira-work']);
+
+            expect(result).toBeUndefined();
+        });
+
+        it('should return isApiToken true for basic auth on cloud site', async () => {
+            const basicAuthInfo: BasicAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                username: 'test@example.com',
+                password: 'api-token',
+            };
+
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(basicAuthInfo);
+
+            const result = await credentialManager.checkScopes(mockCloudSite, ['read:jira-work', 'write:jira-work']);
+
+            expect(result).toEqual({
+                isApiToken: true,
+                checkedScopes: {},
+            });
+        });
+
+        it('should check scopes for OAuth with all scopes present', async () => {
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'access-token',
+                refresh: 'refresh-token',
+                recievedAt: Date.now(),
+                scopes: ['read:jira-work', 'write:jira-work', 'read:jira-user'],
+            };
+
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(oauthInfo);
+
+            const result = await credentialManager.checkScopes(mockCloudSite, ['read:jira-work', 'write:jira-work']);
+
+            expect(result).toEqual({
+                isApiToken: false,
+                checkedScopes: {
+                    'read:jira-work': true,
+                    'write:jira-work': true,
+                },
+            });
+        });
+
+        it('should check scopes for OAuth with some scopes missing', async () => {
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'access-token',
+                refresh: 'refresh-token',
+                recievedAt: Date.now(),
+                scopes: ['read:jira-work'],
+            };
+
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(oauthInfo);
+
+            const result = await credentialManager.checkScopes(mockCloudSite, [
+                'read:jira-work',
+                'write:jira-work',
+                'admin:jira-project',
+            ]);
+
+            expect(result).toEqual({
+                isApiToken: false,
+                checkedScopes: {
+                    'read:jira-work': true,
+                    'write:jira-work': false,
+                    'admin:jira-project': false,
+                },
+            });
+        });
+
+        it('should check scopes for OAuth with no scopes present', async () => {
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'access-token',
+                refresh: 'refresh-token',
+                recievedAt: Date.now(),
+                scopes: [],
+            };
+
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(oauthInfo);
+
+            const result = await credentialManager.checkScopes(mockCloudSite, ['read:jira-work', 'write:jira-work']);
+
+            expect(result).toEqual({
+                isApiToken: true,
+                checkedScopes: {
+                    'read:jira-work': false,
+                    'write:jira-work': false,
+                },
+            });
+        });
+
+        it('should check scopes for OAuth with undefined scopes (treated as empty array)', async () => {
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'access-token',
+                refresh: 'refresh-token',
+                recievedAt: Date.now(),
+            };
+
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(oauthInfo);
+
+            const result = await credentialManager.checkScopes(mockCloudSite, ['read:jira-work']);
+
+            expect(result).toEqual({
+                isApiToken: true,
+                checkedScopes: {
+                    'read:jira-work': false,
+                },
+            });
+        });
+
+        it('should handle empty scopes array to check', async () => {
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'access-token',
+                refresh: 'refresh-token',
+                recievedAt: Date.now(),
+                scopes: ['read:jira-work', 'write:jira-work'],
+            };
+
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(oauthInfo);
+
+            const result = await credentialManager.checkScopes(mockCloudSite, []);
+
+            expect(result).toEqual({
+                isApiToken: false,
+                checkedScopes: {},
+            });
+        });
+    });
+
+    describe('getApiTokenIfExists', () => {
+        const mockCloudSite = expansionCastTo<DetailedSiteInfo>({
+            id: 'cloud-site-id',
+            name: 'Cloud Site',
+            product: ProductJira,
+            baseApiUrl: 'https://test.atlassian.net/api',
+            baseLinkUrl: 'https://test.atlassian.net',
+            credentialId: 'cloud-credential-id',
+            host: 'test.atlassian.net',
+        });
+
+        const mockServerSite = expansionCastTo<DetailedSiteInfo>({
+            id: 'server-site-id',
+            name: 'Server Site',
+            product: ProductJira,
+            baseApiUrl: 'https://jira.example.com/api',
+            baseLinkUrl: 'https://jira.example.com',
+            credentialId: 'server-credential-id',
+            host: 'jira.example.com',
+        });
+
+        const basicAuthInfo: BasicAuthInfo = {
+            user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+            state: AuthInfoState.Valid,
+            username: 'test@example.com',
+            password: 'api-token-123',
+        };
+
+        beforeEach(() => {
+            jest.clearAllMocks();
+        });
+
+        it('should return undefined for non-cloud sites', async () => {
+            const result = await credentialManager.getApiTokenIfExists(mockServerSite);
+
+            expect(result).toBeUndefined();
+        });
+
+        it('should return undefined when site is not found in available sites', async () => {
+            (Container.siteManager.getSitesAvailable as jest.Mock).mockReturnValue([]);
+
+            const result = await credentialManager.getApiTokenIfExists(mockCloudSite);
+
+            expect(result).toBeUndefined();
+        });
+
+        it('should return BasicAuthInfo when site has API token', async () => {
+            (Container.siteManager.getSitesAvailable as jest.Mock).mockReturnValue([mockCloudSite]);
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(basicAuthInfo);
+
+            const result = await credentialManager.getApiTokenIfExists(mockCloudSite);
+
+            expect(result).toEqual(basicAuthInfo);
+            expect(credentialManager.getAuthInfo).toHaveBeenCalledWith(mockCloudSite);
+        });
+
+        it('should return undefined when site has OAuth credentials', async () => {
+            const oauthInfo: OAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+                access: 'access-token',
+                refresh: 'refresh-token',
+                recievedAt: Date.now(),
+                scopes: ['read:jira-work'],
+            };
+
+            (Container.siteManager.getSitesAvailable as jest.Mock).mockReturnValue([mockCloudSite]);
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(oauthInfo);
+
+            const result = await credentialManager.getApiTokenIfExists(mockCloudSite);
+
+            expect(result).toBeUndefined();
+        });
+
+        it('should return undefined when site has no auth info', async () => {
+            (Container.siteManager.getSitesAvailable as jest.Mock).mockReturnValue([mockCloudSite]);
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(undefined);
+
+            const result = await credentialManager.getApiTokenIfExists(mockCloudSite);
+
+            expect(result).toBeUndefined();
+        });
+
+        it('should find site by id even if credentialId differs', async () => {
+            const siteWithDifferentCredentialId = {
+                ...mockCloudSite,
+                credentialId: 'different-credential-id',
+            };
+
+            (Container.siteManager.getSitesAvailable as jest.Mock).mockReturnValue([siteWithDifferentCredentialId]);
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(basicAuthInfo);
+
+            const result = await credentialManager.getApiTokenIfExists(mockCloudSite);
+
+            expect(result).toEqual(basicAuthInfo);
+            expect(credentialManager.getAuthInfo).toHaveBeenCalledWith(siteWithDifferentCredentialId);
+        });
+
+        it('should return undefined when auth info is not BasicAuthInfo type', async () => {
+            const nonBasicAuthInfo = {
+                user: { id: 'user-id', displayName: 'User Name', email: 'user@example.com', avatarUrl: '' },
+                state: AuthInfoState.Valid,
+            };
+
+            (Container.siteManager.getSitesAvailable as jest.Mock).mockReturnValue([mockCloudSite]);
+            credentialManager.getAuthInfo = jest.fn().mockResolvedValue(nonBasicAuthInfo);
+
+            const result = await credentialManager.getApiTokenIfExists(mockCloudSite);
+
             expect(result).toBeUndefined();
         });
     });
@@ -367,21 +860,6 @@ describe('CredentialManager', () => {
         });
     });
 
-    describe('deleteSecretStorageItem', () => {
-        it('should delete item from secret storage', async () => {
-            await credentialManager.deleteSecretStorageItem(ProductJira.key);
-            expect(Container.context.secrets.delete).toHaveBeenCalledWith(ProductJira.key);
-        });
-
-        it('should handle errors gracefully', async () => {
-            // Mock error
-            (Container.context.secrets.delete as jest.Mock).mockRejectedValue(new Error('Test error'));
-
-            await credentialManager.deleteSecretStorageItem(ProductJira.key);
-            expect(Logger.info).toHaveBeenCalled();
-        });
-    });
-
     describe('static methods', () => {
         it('generateCredentialId should create consistent hash', () => {
             const id1 = CredentialManager.generateCredentialId('site1', 'user1');
@@ -390,6 +868,81 @@ describe('CredentialManager', () => {
 
             expect(id1).toEqual(id2);
             expect(id1).not.toEqual(id3);
+        });
+    });
+
+    describe('findApiTokenForSite', () => {
+        const basicAuthInfo: BasicAuthInfo = {
+            username: 'user',
+            password: 'pass',
+            user: { email: 'test@domain.com', id: 'id', displayName: 'Test User', avatarUrl: '' },
+            state: AuthInfoState.Valid,
+        };
+
+        const makeSite = (host: string, email: string): any => ({
+            host,
+            id: 'site-id',
+            name: 'Test Site',
+            avatarUrl: '',
+            baseLinkUrl: '',
+            product: 'jira',
+            user: { email, id: 'id', displayName: 'Test User', avatarUrl: '' },
+        });
+
+        beforeEach(() => {
+            jest.clearAllMocks();
+        });
+
+        it('returns undefined if site is not found', async () => {
+            (Container.siteManager.getSiteForId as jest.Mock).mockReturnValue(undefined);
+            const result = await credentialManager.findApiTokenForSite('site-id');
+            expect(result).toBeUndefined();
+        });
+
+        it('returns undefined if site host is not .atlassian.net', async () => {
+            (Container.siteManager.getSiteForId as jest.Mock).mockReturnValue(
+                makeSite('example.com', 'test@domain.com'),
+            );
+            const result = await credentialManager.findApiTokenForSite('site-id');
+            expect(result).toBeUndefined();
+        });
+
+        it('returns undefined if no matching authInfo found', async () => {
+            const site = makeSite('test.atlassian.net', 'a@b.com');
+            (Container.siteManager.getSiteForId as jest.Mock).mockReturnValue(site);
+            (Container.siteManager.getSitesAvailable as jest.Mock).mockReturnValue([site]);
+            credentialManager.getAuthInfo = jest
+                .fn()
+                .mockResolvedValueOnce({
+                    user: { email: 'a@b.com', id: 'id', displayName: '', avatarUrl: '' },
+                })
+                .mockResolvedValueOnce(undefined);
+            const result = await credentialManager.findApiTokenForSite('site-id');
+            expect(result).toBeUndefined();
+        });
+
+        it('returns BasicAuthInfo if matching site and authInfo found', async () => {
+            const site = makeSite('test.atlassian.net', 'test@domain.com');
+            (Container.siteManager.getSiteForId as jest.Mock).mockReturnValue(site);
+            (Container.siteManager.getSitesAvailable as jest.Mock).mockReturnValue([site]);
+            // First call returns an object with a user property, second returns BasicAuthInfo
+            credentialManager.getAuthInfo = jest
+                .fn()
+                .mockResolvedValueOnce({ user: site.user })
+                .mockResolvedValueOnce(basicAuthInfo);
+            const result = await credentialManager.findApiTokenForSite('site-id');
+            expect(result).toEqual(basicAuthInfo);
+        });
+
+        it('works when site is passed as DetailedSiteInfo', async () => {
+            const site = makeSite('test.atlassian.net', 'test@domain.com');
+            (Container.siteManager.getSitesAvailable as jest.Mock).mockReturnValue([site]);
+            credentialManager.getAuthInfo = jest
+                .fn()
+                .mockResolvedValueOnce({ user: site.user })
+                .mockResolvedValueOnce(basicAuthInfo);
+            const result = await credentialManager.findApiTokenForSite(site);
+            expect(result).toEqual(basicAuthInfo);
         });
     });
 });

@@ -1,9 +1,13 @@
-import { defaultActionGuard } from '@atlassianlabs/guipi-core-controller';
 import Axios from 'axios';
+import { defaultActionGuard } from 'src/ipc/messaging';
+import { Logger } from 'src/logger';
+import { Features } from 'src/util/features';
 import { v4 } from 'uuid';
-import vscode from 'vscode';
+import { env } from 'vscode';
+import * as vscode from 'vscode';
 
 import { isBasicAuthInfo, isEmptySiteInfo, isPATAuthInfo } from '../../../../atlclients/authInfo';
+import { Commands, ExtensionId } from '../../../../constants';
 import { Container } from '../../../../container';
 import { AnalyticsApi } from '../../../analyticsApi';
 import { CommonActionType } from '../../../ipc/fromUI/common';
@@ -11,16 +15,17 @@ import { ConfigAction, ConfigActionType } from '../../../ipc/fromUI/config';
 import { WebViewID } from '../../../ipc/models/common';
 import { CommonMessage, CommonMessageType } from '../../../ipc/toUI/common';
 import { ConfigMessage, ConfigMessageType, ConfigResponse, SectionChangeMessage } from '../../../ipc/toUI/config';
-import { Logger } from '../../../logger';
 import { formatError } from '../../formatError';
 import { CommonActionMessageHandler } from '../common/commonActionMessageHandler';
 import { MessagePoster, WebviewController } from '../webviewController';
 import { ConfigActionApi } from './configActionApi';
 
-export const id: string = 'atlascodeSettingsV2';
+const AUTH_URI = `${env.uriScheme || 'vscode'}://${ExtensionId}/auth`;
+
+export const id: string = 'atlascodeSettingsV2'; // Need to change this to 'id_v2' to help with dif versions
 
 export class ConfigWebviewController implements WebviewController<SectionChangeMessage> {
-    public readonly requiredFeatureFlags = [];
+    public readonly requiredFeatureFlags = [Features.UseNewAuthFlow];
     public readonly requiredExperiments = [];
 
     private _messagePoster: MessagePoster;
@@ -93,11 +98,17 @@ export class ConfigWebviewController implements WebviewController<SectionChangeM
                 target: target,
                 showTunnelOption: this._api.shouldShowTunnelOption(),
                 config: cfg,
+                machineId: vscode.env.machineId,
                 ...section,
             });
 
             if (this._initialSection) {
-                this._initialSection = undefined;
+                // Clear the initiateApiTokenAuth flag after it's been sent to prevent it from being reused
+                if (this._initialSection.initiateApiTokenAuth) {
+                    this._initialSection = { ...this._initialSection, initiateApiTokenAuth: undefined };
+                } else {
+                    this._initialSection = undefined;
+                }
             }
         } catch (e) {
             this._logger.error(e, 'Error updating configuration');
@@ -108,7 +119,17 @@ export class ConfigWebviewController implements WebviewController<SectionChangeM
     }
 
     public update(section: SectionChangeMessage) {
-        this.postMessage({ type: ConfigMessageType.SectionChange, ...section });
+        // Store the section data for potential invalidate calls
+        this._initialSection = section;
+
+        // If the update includes initiateApiTokenAuth, use invalidate() to ensure reliable delivery
+        // This sends an Init message with all the section data, avoiding race conditions
+        if (section.initiateApiTokenAuth) {
+            this.invalidate();
+        } else {
+            // Only send SectionChange for non-auth updates to avoid duplicate messages
+            this.postMessage({ type: ConfigMessageType.SectionChange, ...section });
+        }
     }
 
     public async onMessageReceived(msg: ConfigAction) {
@@ -139,13 +160,21 @@ export class ConfigWebviewController implements WebviewController<SectionChangeM
                         });
                     }
                 } else {
-                    this._api.authenticateCloud(msg.siteInfo, this._settingsUrl);
+                    try {
+                        await this._api.authenticateCloud(msg.siteInfo, this._settingsUrl);
+                    } catch (e) {
+                        this._logger.error(e, 'Cloud authentication error');
+                        this.postMessage({
+                            type: CommonMessageType.Error,
+                            reason: formatError(e, 'Cloud authentication error'),
+                        });
+                    }
                 }
                 this._analytics.fireAuthenticateButtonEvent(id, msg.siteInfo, isCloud);
                 break;
             }
             case ConfigActionType.RemoteLogin: {
-                const uri = vscode.Uri.parse('vscode://atlassian.atlascode/auth');
+                const uri = vscode.Uri.parse(AUTH_URI);
                 vscode.env.asExternalUri(uri).then((uri) => {
                     const state = { deeplink: uri.toString(true), attemptId: v4() };
                     Container.loginManager.initRemoteAuth(state);
@@ -281,6 +310,14 @@ export class ConfigWebviewController implements WebviewController<SectionChangeM
             case ConfigActionType.ViewPullRequest: {
                 this._api.viewPullRequest();
                 this._analytics.fireFocusPullRequestEvent(id);
+                break;
+            }
+            case ConfigActionType.OpenNativeSettings: {
+                await this._api.openNativeSettings();
+                break;
+            }
+            case ConfigActionType.StartAuthFlow: {
+                vscode.commands.executeCommand(Commands.JiraLogin);
                 break;
             }
 

@@ -21,11 +21,15 @@ export class HelpExplorer extends Explorer implements Disposable {
         return emptyProduct;
     }
 
-    dispose() {
+    override dispose() {
         super.dispose();
     }
 
     async handleFocusEvent(e: FocusEvent) {
         //No focus available for now
+    }
+
+    refresh() {
+        this.newTreeView();
     }
 }

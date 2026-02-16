@@ -1,92 +1,32 @@
 import AwesomeDebouncePromise from 'awesome-debounce-promise';
 import equal from 'fast-deep-equal/es6';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { SiteWithAuthInfo } from 'src/lib/ipc/toUI/config';
 import useConstant from 'use-constant';
 
-type InputElement = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+import { BasicAuthInfo, isBasicAuthInfo, Product } from '../../../../atlclients/authInfo';
+import { AuthFormType } from '../../constants';
+import { clearField, getFieldValue, isCheckboxOrRadio, setFieldValue } from '../../util/authFormUtils';
+import { Errors, FieldDescriptor, Fields, FormValidation, InputElement, OnSubmit, ValidateFunc } from '../types';
+import { clearFieldsSwitchingFormTypes, getFieldsValidationHelpers, selectAuthFormType } from './helpers';
 
-type ValidationResult = string | undefined;
-type ValidateFunc = (fieldName: string, data: any) => ValidationResult | Promise<ValidationResult>;
-type FieldDescriptor = {
-    inputRef: InputElement;
-    error: ValidationResult;
-    touched: boolean;
-    validator: ValidateFunc | undefined;
-    options: InputElement[];
-};
-type Fields = {
-    [k: string]: FieldDescriptor;
-};
-
-type Errors<T> = {
-    [key in keyof T]: string;
-};
-
-export type OnSubmit<FieldTypes> = (data: FieldTypes) => void | Promise<void>;
-
-export type FormValidation<FieldTypes> = {
-    register<Element extends InputElement = InputElement>(): (ref: Element | null) => void;
-    register<Element extends InputElement = InputElement>(validate: ValidateFunc): (ref: Element | null) => void;
-    register<Element extends InputElement = InputElement>(
-        ref?: Element,
-        validate?: ValidateFunc,
-    ): ((ref: Element | null) => void) | void;
-    watches: Partial<FieldTypes>;
-    errors: Partial<Errors<FieldTypes>>;
-    isValid: boolean;
-    handleSubmit: (callback: OnSubmit<Partial<FieldTypes>>) => (e?: React.BaseSyntheticEvent) => Promise<void>;
-};
-
-const isFileInput = (element?: InputElement): element is HTMLInputElement => {
-    return !!element && element.type === 'file';
-};
-
-const isRadioInput = (element?: InputElement): element is HTMLInputElement => {
-    return !!element && element.type === 'radio';
-};
-
-const isCheckBox = (element?: InputElement): element is HTMLInputElement => {
-    return !!element && element.type === 'checkbox';
-};
-
-const isCheckboxOrRadio = (element?: InputElement): element is HTMLInputElement => {
-    return !!element && (element.type === 'checkbox' || element.type === 'radio');
-};
-
-const getFieldValue = (field: FieldDescriptor): any => {
-    if (isFileInput(field.inputRef)) {
-        return field.inputRef.files;
-    }
-
-    if (isRadioInput(field.inputRef)) {
-        const radioOptions = Array.isArray(field.options)
-            ? field.options.filter((opt) => (opt as HTMLInputElement).checked)
-            : [];
-
-        return radioOptions.length > 0 ? radioOptions[0].value : '';
-    }
-
-    if (isCheckBox(field.inputRef)) {
-        const checkOptions = Array.isArray(field.options)
-            ? field.options.filter((opt) => (opt as HTMLInputElement).checked)
-            : [];
-
-        return checkOptions.length > 1
-            ? checkOptions.map((opt) => opt.value)
-            : checkOptions.length > 0
-              ? (checkOptions[0] as HTMLInputElement).checked
-              : false;
-    }
-
-    return field.inputRef.value;
-};
-
-export function useFormValidation<FieldTypes>(watch?: Partial<FieldTypes>): FormValidation<FieldTypes> {
+export function useFormValidation<FieldTypes>(
+    authTypeTabIndex: number,
+    product: Product,
+    watch: Partial<FieldTypes> | undefined,
+    allSitesWithAuth: SiteWithAuthInfo[],
+): FormValidation<FieldTypes> {
     const fields = useConstant<Fields>(() => ({}));
     const watchDefaults = useRef<Partial<FieldTypes>>(watch ? watch : {});
     const watches = useRef<Partial<FieldTypes>>(watch ? watch : {});
     const errors = useRef<Partial<Errors<FieldTypes>>>({});
     const [, reRender] = useState(false);
+    const previousAuthFormType = useRef<AuthFormType>(AuthFormType.None);
+    const previousBaseUrl = useRef<string | undefined>(
+        'baseUrl' in watches.current
+            ? (watches.current as Partial<FieldTypes & { baseUrl: string }>).baseUrl
+            : undefined,
+    );
 
     const handleChange = useConstant(() => async (e: Event) => {
         const field = fields[(e.target as InputElement).name];
@@ -160,6 +100,40 @@ export function useFormValidation<FieldTypes>(watch?: Partial<FieldTypes>): Form
         }
     }, [watch]);
 
+    // Clear or populate fields when switching between form types or when baseUrl changes
+    useEffect(() => {
+        const currentBaseUrl = (watches.current as Partial<FieldTypes & { baseUrl: string }>).baseUrl;
+        const baseUrlChanged = previousBaseUrl.current !== undefined && previousBaseUrl.current !== currentBaseUrl;
+        if (baseUrlChanged) {
+            // Find if there's an existing site matching the new URL
+            const matchingSite = currentBaseUrl
+                ? allSitesWithAuth.find((x) => x.site.baseLinkUrl === currentBaseUrl)
+                : undefined;
+
+            if (matchingSite) {
+                const username = isBasicAuthInfo(matchingSite.auth)
+                    ? (matchingSite.auth as BasicAuthInfo).username || matchingSite.auth.user.email
+                    : matchingSite.auth.user.email;
+
+                if (username) {
+                    setFieldValue(fields, errors, 'username', username);
+                } else {
+                    clearField(fields, errors, 'username');
+                }
+            } else {
+                clearField(fields, errors, 'username');
+            }
+            clearField(fields, errors, 'password');
+        }
+
+        const currentAuthFormType = selectAuthFormType(product, watches.current, errors.current);
+        clearFieldsSwitchingFormTypes(currentAuthFormType, fields, errors, authTypeTabIndex);
+        previousAuthFormType.current = currentAuthFormType;
+        previousBaseUrl.current = currentBaseUrl;
+
+        reRender((prevToggle) => !prevToggle);
+    }, [authTypeTabIndex, product, allSitesWithAuth, (watches.current as any).baseUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
     const doRegister = useCallback(
         (ref: InputElement | null, validate?: ValidateFunc) => {
             if (ref) {
@@ -182,6 +156,13 @@ export function useFormValidation<FieldTypes>(watch?: Partial<FieldTypes>): Form
                 } else {
                     ref.addEventListener('input', handleChange);
                 }
+
+                // simulate an input event after 100ms from its initialization, if it starts with a value
+                setTimeout(() => {
+                    if (ref.value) {
+                        ref.dispatchEvent(new Event('input'));
+                    }
+                }, 100);
 
                 if (fields[ref.name] !== undefined && isOptionable) {
                     const existingField = fields[ref.name];
@@ -213,6 +194,7 @@ export function useFormValidation<FieldTypes>(watch?: Partial<FieldTypes>): Form
         },
         [fields, handleChange],
     );
+
     function register<Element extends InputElement = InputElement>(): (ref: Element | null) => void;
     function register<Element extends InputElement = InputElement>(
         refOrValidate?: Element | ValidateFunc,
@@ -227,11 +209,40 @@ export function useFormValidation<FieldTypes>(watch?: Partial<FieldTypes>): Form
         return doRegister;
     }
 
+    const { getRelevantFieldNames, validRequiredFields, getRelevantErrors } = getFieldsValidationHelpers(
+        fields,
+        product,
+        watches,
+        errors,
+        authTypeTabIndex,
+    );
+
+    const validateFields = (): boolean => {
+        const requiredFields = getRelevantFieldNames();
+        return validRequiredFields(requiredFields);
+    };
+
+    const noErrors = getRelevantErrors() < 1;
+    const fieldsValid = validateFields();
+    const isValid = noErrors && fieldsValid;
+
+    const updateWatches = (updates: Partial<FieldTypes>) => {
+        watches.current = { ...watches.current, ...updates };
+    };
+
+    const authFormType = selectAuthFormType(product, watches.current, errors.current);
+
+    const baseUrl: string | undefined = (errors.current as any).baseUrl ? undefined : (watches.current as any).baseUrl;
+    const authSiteFound = baseUrl ? allSitesWithAuth.find((x) => x.site.baseLinkUrl === baseUrl) : undefined;
+
     return {
         register: useCallback(register, []), // eslint-disable-line react-hooks/exhaustive-deps
         watches: watches.current,
         errors: errors.current,
         handleSubmit,
-        isValid: Object.values(errors.current).length < 1,
+        isValid,
+        authFormType,
+        updateWatches,
+        authSiteFound,
     };
 }

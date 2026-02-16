@@ -1,5 +1,7 @@
-import { ExpansionPanel, ExpansionPanelDetails, ExpansionPanelSummary } from '@material-ui/core';
-import ExpandMoreIcon from '@material-ui/icons/ExpandMore';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import Accordion from '@mui/material/Accordion';
+import AccordionDetails from '@mui/material/AccordionDetails';
+import AccordionSummary from '@mui/material/AccordionSummary';
 import React, { memo, useCallback, useEffect, useState } from 'react';
 
 import { Product } from '../../../../atlclients/authInfo';
@@ -15,10 +17,11 @@ type AuthPanelProps = CommonSubpanelProps & {
     sites: SiteWithAuthInfo[];
     product: Product;
     section: ConfigSection;
+    initiateApiTokenAuth: boolean;
 };
 
 export const AuthPanel: React.FunctionComponent<AuthPanelProps> = memo(
-    ({ visible, expanded, onSubsectionChange, isRemote, sites, product, section }) => {
+    ({ visible, expanded, onSubsectionChange, isRemote, sites, product, section, initiateApiTokenAuth }) => {
         const [internalExpanded, setInternalExpanded] = useState(expanded);
 
         const expansionHandler = useCallback(
@@ -39,19 +42,24 @@ export const AuthPanel: React.FunctionComponent<AuthPanelProps> = memo(
         }, [expanded]);
 
         return (
-            <ExpansionPanel hidden={!visible} square={false} expanded={internalExpanded} onChange={expansionHandler}>
-                <ExpansionPanelSummary
+            <Accordion hidden={!visible} square={false} expanded={internalExpanded} onChange={expansionHandler}>
+                <AccordionSummary
                     expandIcon={<ExpandMoreIcon />}
                     aria-controls={`${section}-${ConfigSubSection.Auth}-content`}
                     id={`${section}-${ConfigSubSection.Auth}-header`}
                 >
                     <PanelTitle>Authentication</PanelTitle>
                     <PanelSubtitle>authenticate with {product.name} instances</PanelSubtitle>
-                </ExpansionPanelSummary>
-                <ExpansionPanelDetails>
-                    <SiteAuthenticator product={product} isRemote={isRemote} sites={sites} />
-                </ExpansionPanelDetails>
-            </ExpansionPanel>
+                </AccordionSummary>
+                <AccordionDetails>
+                    <SiteAuthenticator
+                        product={product}
+                        isRemote={isRemote}
+                        sites={sites}
+                        initiateApiTokenAuth={initiateApiTokenAuth}
+                    />
+                </AccordionDetails>
+            </Accordion>
         );
     },
 );

@@ -1,5 +1,7 @@
-import { ExpansionPanel, ExpansionPanelDetails, ExpansionPanelSummary } from '@material-ui/core';
-import ExpandMoreIcon from '@material-ui/icons/ExpandMore';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import Accordion from '@mui/material/Accordion';
+import AccordionDetails from '@mui/material/AccordionDetails';
+import AccordionSummary from '@mui/material/AccordionSummary';
 import React, { memo, useCallback, useEffect, useState } from 'react';
 
 import { ConfigSection, ConfigSubSection } from '../../../../../lib/ipc/models/config';
@@ -10,12 +12,10 @@ import { Connectivity } from '../Connectivity';
 
 type GenConnectPanelProps = CommonSubpanelProps & {
     enableHttpsTunnel: boolean;
-    offlineMode: boolean;
-    onlineCheckerUrls: string[];
 };
 
 export const GenConnectPanel: React.FunctionComponent<GenConnectPanelProps> = memo(
-    ({ visible, expanded, onSubsectionChange, enableHttpsTunnel, offlineMode, onlineCheckerUrls }) => {
+    ({ visible, expanded, onSubsectionChange, enableHttpsTunnel }) => {
         const [internalExpanded, setInternalExpanded] = useState(expanded);
 
         const expansionHandler = useCallback(
@@ -36,23 +36,19 @@ export const GenConnectPanel: React.FunctionComponent<GenConnectPanelProps> = me
         }, [expanded]);
 
         return (
-            <ExpansionPanel hidden={!visible} square={false} expanded={internalExpanded} onChange={expansionHandler}>
-                <ExpansionPanelSummary
+            <Accordion hidden={!visible} square={false} expanded={internalExpanded} onChange={expansionHandler}>
+                <AccordionSummary
                     expandIcon={<ExpandMoreIcon />}
                     aria-controls={`${ConfigSection.General}-${ConfigSubSection.Connectivity}-content`}
                     id={`${ConfigSection.General}-${ConfigSubSection.Connectivity}-header`}
                 >
                     <PanelTitle>Connectivity</PanelTitle>
                     <PanelSubtitle>configure general connectivity settings</PanelSubtitle>
-                </ExpansionPanelSummary>
-                <ExpansionPanelDetails>
-                    <Connectivity
-                        enableHttpsTunnel={enableHttpsTunnel}
-                        offlineMode={offlineMode}
-                        onlineCheckerUrls={onlineCheckerUrls}
-                    />
-                </ExpansionPanelDetails>
-            </ExpansionPanel>
+                </AccordionSummary>
+                <AccordionDetails>
+                    <Connectivity enableHttpsTunnel={enableHttpsTunnel} />
+                </AccordionDetails>
+            </Accordion>
         );
     },
 );

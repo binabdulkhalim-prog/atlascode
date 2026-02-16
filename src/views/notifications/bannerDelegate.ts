@@ -15,6 +15,7 @@ import {
     NotificationSurface,
     NotificationType,
 } from './notificationManager';
+import { determineNotificationSource } from './notificationSources';
 
 export class BannerDelegate implements NotificationDelegate {
     private static bannerDelegateSingleton: BannerDelegate | undefined = undefined;
@@ -70,21 +71,31 @@ export class BannerDelegate implements NotificationDelegate {
         }
     }
 
-    private aggregateAndShowNotifications() {
+    private async aggregateAndShowNotifications() {
         // for now, this simply shows all notifications in the pile with no aggregation. In the future, this should group notifications by notification type.
+        const notificationPromises: Promise<void>[] = [];
+
         this.pile.forEach((event) => {
             if (event.action === NotificationAction.Added) {
                 event.notifications.forEach((notification) => {
                     const { text, action } = this.makeAction(notification);
-                    this.showNotification(notification, text, action);
+                    notificationPromises.push(this.showNotification(notification, text, action));
                 });
             }
         });
+
+        // Wait for all notifications to be marked as banner-shown before clearing the pile
+        await Promise.all(notificationPromises);
+
         this.pile.clear();
         this.timer = undefined;
     }
 
-    private showNotification(notification: AtlasCodeNotification, yesText: string, yesAction: () => void) {
+    private async showNotification(notification: AtlasCodeNotification, yesText: string, yesAction: () => void) {
+        // Mark this notification as banner-shown to prevent duplicate banners after VS Code restart
+        // We await this to ensure the state is persisted before showing the notification
+        await NotificationManagerImpl.getInstance().markBannerShown(notification.id, notification.timestamp);
+
         const displayedNotification = window.showInformationMessage(notification.message, yesText);
         this.analyticsBannerShown(notification.uri, 1);
 
@@ -140,7 +151,7 @@ export class BannerDelegate implements NotificationDelegate {
     }
 
     private analyticsBannerShown(uri: Uri, count: number) {
-        notificationChangeEvent(uri, NotificationSurface.Banner, count).then((e) => {
+        notificationChangeEvent(determineNotificationSource(uri), uri, NotificationSurface.Banner, count).then((e) => {
             this._analyticsClient.sendTrackEvent(e);
         });
     }

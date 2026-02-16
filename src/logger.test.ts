@@ -1,10 +1,11 @@
+import { describe } from '@jest/globals';
 import { expansionCastTo } from 'testsutil';
 import { ConfigurationChangeEvent, Disposable, ExtensionContext, LogOutputChannel, window } from 'vscode';
 
 import { configuration, OutputLevel } from './config/configuration';
 import { extensionOutputChannelName } from './constants';
-import { Container } from './container';
 import { ErrorEvent, Logger } from './logger';
+import { isDebugging } from './util/isDebugging';
 
 // Mock configuration
 jest.mock('./config/configuration', () => {
@@ -25,15 +26,20 @@ jest.mock('./config/configuration', () => {
     };
 });
 
-// Mock Container
-jest.mock('./container', () => ({
-    Container: {
-        isDebugging: false,
+// Mock isDebugging
+jest.mock('./util/isDebugging', () => ({
+    isDebugging: jest.fn().mockReturnValue(false),
+}));
+
+// Mock SentryService
+jest.mock('./sentry', () => ({
+    SentryService: {
+        getInstance: jest.fn(),
     },
 }));
 
 const mockContainerIsDebugging = () => {
-    (Container.isDebugging as any) = true;
+    (isDebugging as jest.Mock).mockReturnValue(true);
 };
 
 const deleteLoggerInstance = () => {
@@ -48,6 +54,13 @@ describe('Logger', () => {
     beforeEach(() => {
         // Reset mocks
         jest.clearAllMocks();
+
+        // Setup default SentryService mock to avoid crashes in other tests
+        const { SentryService } = require('./sentry');
+        (SentryService.getInstance as jest.Mock).mockReturnValue({
+            isInitialized: jest.fn().mockReturnValue(false),
+            captureException: jest.fn(),
+        });
 
         mockOutputChannel = expansionCastTo<LogOutputChannel>({
             dispose: jest.fn(),
@@ -70,8 +83,8 @@ describe('Logger', () => {
 
     afterEach(() => {
         deleteLoggerInstance();
-        // Reset Container debugging state
-        (Container.isDebugging as any) = false;
+        // Reset debugging state
+        (isDebugging as jest.Mock).mockReturnValue(false);
     });
 
     describe('configure', () => {
@@ -121,7 +134,11 @@ describe('Logger', () => {
         });
     });
 
-    describe('info', () => {
+    describe.each([false, true])('info', (useInstance) => {
+        const Logger_info: typeof Logger.info = useInstance
+            ? (...args) => Logger.Instance.info(...args)
+            : (...args) => Logger.info(...args);
+
         beforeEach(() => {
             // Set up Logger with Info level
             (configuration.initializing as jest.Mock).mockReturnValue(true);
@@ -130,7 +147,7 @@ describe('Logger', () => {
         });
 
         it('should append message to output channel', () => {
-            Logger.info('test info message');
+            Logger_info('test info message');
 
             expect(mockOutputChannel.appendLine).toHaveBeenCalled();
             const call = (mockOutputChannel.appendLine as jest.Mock).mock.calls[0][0];
@@ -142,13 +159,17 @@ describe('Logger', () => {
             (configuration.get as jest.Mock).mockReturnValue(OutputLevel.Errors);
             Logger.configure(expansionCastTo<ExtensionContext>({ subscriptions: [] }));
 
-            Logger.info('test info message');
+            Logger_info('test info message');
 
             expect(mockOutputChannel.appendLine).not.toHaveBeenCalled();
         });
     });
 
-    describe('debug', () => {
+    describe.each([false, true])('debug', (useInstance) => {
+        const Logger_debug: typeof Logger.debug = useInstance
+            ? (...args) => Logger.Instance.debug(...args)
+            : (...args) => Logger.debug(...args);
+
         beforeEach(() => {
             // Set up Logger with Debug level
             (configuration.initializing as jest.Mock).mockReturnValue(true);
@@ -157,7 +178,7 @@ describe('Logger', () => {
         });
 
         it('should append message to output channel', () => {
-            Logger.debug('test debug message');
+            Logger_debug('test debug message');
 
             expect(mockOutputChannel.appendLine).toHaveBeenCalled();
             const call = (mockOutputChannel.appendLine as jest.Mock).mock.calls[0][0];
@@ -167,7 +188,7 @@ describe('Logger', () => {
         it('should output to console when in debugging mode', () => {
             mockContainerIsDebugging();
 
-            Logger.debug('test debug message');
+            Logger_debug('test debug message');
 
             expect(console.log).toHaveBeenCalled();
             const calls = consoleSpy.mock.calls[0];
@@ -180,14 +201,18 @@ describe('Logger', () => {
             (configuration.get as jest.Mock).mockReturnValue(OutputLevel.Info);
             Logger.configure(expansionCastTo<ExtensionContext>({ subscriptions: [] }));
 
-            Logger.debug('test debug message');
+            Logger_debug('test debug message');
 
             expect(mockOutputChannel.appendLine).not.toHaveBeenCalled();
             expect(console.log).not.toHaveBeenCalled();
         });
     });
 
-    describe('warn', () => {
+    describe.each([false, true])('warn', (useInstance) => {
+        const Logger_warn: typeof Logger.warn = useInstance
+            ? (...args) => Logger.Instance.warn(...args)
+            : (...args) => Logger.warn(...args);
+
         beforeEach(() => {
             // Set up Logger with Debug level
             (configuration.initializing as jest.Mock).mockReturnValue(true);
@@ -196,7 +221,7 @@ describe('Logger', () => {
         });
 
         it('should append message to output channel', () => {
-            Logger.warn('test warning message');
+            Logger_warn('test warning message');
 
             expect(mockOutputChannel.appendLine).toHaveBeenCalled();
             const call = (mockOutputChannel.appendLine as jest.Mock).mock.calls[0][0];
@@ -206,13 +231,17 @@ describe('Logger', () => {
         it('should output to console when in debugging mode', () => {
             mockContainerIsDebugging();
 
-            Logger.warn('test warning message');
+            Logger_warn('test warning message');
 
             expect(console.warn).toHaveBeenCalled();
         });
     });
 
-    describe('error', () => {
+    describe.each([false, true])('error', (useInstance) => {
+        const Logger_error: typeof Logger.error = useInstance
+            ? (...args) => Logger.Instance.error.apply(Logger.Instance, args)
+            : (...args) => Logger.error.apply(Logger, args);
+
         beforeEach(() => {
             // Set up Logger with Error level
             (configuration.initializing as jest.Mock).mockReturnValue(true);
@@ -227,7 +256,7 @@ describe('Logger', () => {
                 eventRegistration = Logger.onError(errorHandlerSpy);
 
                 const testError = new Error('test error message');
-                Logger.error(testError, 'Something went wrong');
+                Logger_error(testError, 'Something went wrong');
 
                 expect(errorHandlerSpy).toHaveBeenCalled();
                 const errorEvent: ErrorEvent = errorHandlerSpy.mock.calls[0][0];
@@ -241,7 +270,7 @@ describe('Logger', () => {
 
         it('should append error to output channel', () => {
             const testError = new Error('test error message');
-            Logger.error(testError, 'Something went wrong');
+            Logger_error(testError, 'Something went wrong');
 
             expect(mockOutputChannel.appendLine).toHaveBeenCalled();
             const call = (mockOutputChannel.appendLine as jest.Mock).mock.calls[0][0];
@@ -253,7 +282,7 @@ describe('Logger', () => {
             mockContainerIsDebugging();
 
             const testError = new Error('test error message');
-            Logger.error(testError, 'Something went wrong');
+            Logger_error(testError, 'Something went wrong');
 
             expect(console.error).toHaveBeenCalled();
         });
@@ -264,7 +293,7 @@ describe('Logger', () => {
             Logger.configure(expansionCastTo<ExtensionContext>({ subscriptions: [] }));
 
             const testError = new Error('test error message');
-            Logger.error(testError, 'Something went wrong');
+            Logger_error(testError, 'Something went wrong');
 
             expect(mockOutputChannel.appendLine).not.toHaveBeenCalled();
             expect(console.error).not.toHaveBeenCalled();
@@ -304,6 +333,102 @@ describe('Logger', () => {
             } finally {
                 eventRegistration!.dispose();
             }
+        });
+    });
+
+    describe('Sentry integration', () => {
+        let mockSentryService: any;
+
+        beforeEach(() => {
+            // Set up Logger with Error level
+            (configuration.initializing as jest.Mock).mockReturnValue(true);
+            (configuration.get as jest.Mock).mockReturnValue(OutputLevel.Errors);
+            Logger.configure(expansionCastTo<ExtensionContext>({ subscriptions: [] }));
+
+            // Setup the mocked Sentry service to be returned by getInstance
+            mockSentryService = {
+                isInitialized: jest.fn(),
+                captureException: jest.fn(),
+            };
+            const { SentryService } = require('./sentry');
+            (SentryService.getInstance as jest.Mock).mockReturnValue(mockSentryService);
+            mockSentryService.isInitialized.mockReturnValue(true);
+        });
+
+        it('should not capture exception to Sentry when not initialized', () => {
+            mockSentryService.isInitialized.mockReturnValue(false);
+
+            const testError = new Error('test error');
+            Logger.error(testError, 'Error message');
+
+            expect(mockSentryService.captureException).not.toHaveBeenCalled();
+        });
+
+        it('should include capturedBy in Sentry tags', () => {
+            mockSentryService.isInitialized.mockReturnValue(true);
+
+            const testError = new Error('test error');
+            Logger.error(testError, 'Error message');
+
+            expect(mockSentryService.captureException).toHaveBeenCalledWith(
+                testError,
+                expect.objectContaining({
+                    tags: expect.objectContaining({
+                        capturedBy: expect.any(String),
+                    }),
+                }),
+            );
+        });
+
+        it('should include params in Sentry extra context', () => {
+            mockSentryService.isInitialized.mockReturnValue(true);
+
+            const testError = new Error('test error');
+            Logger.error(testError, 'Error message', 'param1', 'param2');
+
+            expect(mockSentryService.captureException).toHaveBeenCalledWith(
+                testError,
+                expect.objectContaining({
+                    extra: expect.objectContaining({
+                        params: ['param1', 'param2'],
+                    }),
+                }),
+            );
+        });
+
+        it('should handle Sentry errors gracefully and continue logging', () => {
+            mockSentryService.isInitialized.mockReturnValue(true);
+            mockSentryService.captureException.mockImplementation(() => {
+                throw new Error('Sentry failed');
+            });
+
+            const testError = new Error('test error');
+
+            // Should not throw
+            expect(() => {
+                Logger.error(testError, 'Error message');
+            }).not.toThrow();
+
+            // Should still log to output channel
+            expect(mockOutputChannel.appendLine).toHaveBeenCalled();
+        });
+
+        it('should call Sentry before logging to output channel', () => {
+            mockSentryService.isInitialized.mockReturnValue(true);
+            const callOrder: string[] = [];
+
+            mockSentryService.captureException.mockImplementation(() => {
+                callOrder.push('sentry');
+            });
+
+            (mockOutputChannel.appendLine as jest.Mock).mockImplementation(() => {
+                callOrder.push('output');
+            });
+
+            const testError = new Error('test error');
+            Logger.error(testError, 'Error message');
+
+            expect(callOrder).toEqual(['sentry', 'output']);
         });
     });
 });

@@ -1,4 +1,4 @@
-import { ReducerAction } from '@atlassianlabs/guipi-core-controller';
+import { ReducerAction } from 'src/ipc/messaging';
 
 import { Pipeline, PipelineStep } from '../../../pipelines/model';
 
@@ -10,8 +10,6 @@ export enum PipelineSummaryMessageType {
 export type PipelineSummaryMessage =
     | ReducerAction<PipelineSummaryMessageType.Update, PipelineSummaryUpdateMessage>
     | ReducerAction<PipelineSummaryMessageType.StepsUpdate, PipelineSummaryStepsUpdateMessage>;
-
-export type PipelineSummaryResponse = {};
 
 export interface PipelineSummaryInitMessage {
     pipeline: Pipeline;

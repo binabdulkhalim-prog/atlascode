@@ -1,5 +1,4 @@
-import { Button } from '@material-ui/core';
-import CloudIcon from '@material-ui/icons/Cloud';
+import { Button } from '@mui/material';
 import React, { useContext } from 'react';
 
 import { AuthInfoState, emptyUserInfo, Product, ProductJira } from '../../../../atlclients/authInfo';
@@ -10,7 +9,7 @@ type CloudAuthButtonProps = {
 };
 
 export const CloudAuthButton: React.FunctionComponent<CloudAuthButtonProps> = ({ product }) => {
-    const loginText = `Login to ${product.name} Cloud`;
+    const loginText = `Login with OAuth`;
     const controller = useContext(ConfigControllerContext);
 
     const handleCloudProd = () => {
@@ -19,13 +18,7 @@ export const CloudAuthButton: React.FunctionComponent<CloudAuthButtonProps> = ({
     };
 
     return (
-        <Button
-            id="settings-login-cloud-button"
-            variant="contained"
-            color="primary"
-            startIcon={<CloudIcon />}
-            onClick={() => handleCloudProd()}
-        >
+        <Button id="settings-login-cloud-button" color="primary" variant="contained" onClick={() => handleCloudProd()}>
             {loginText}
         </Button>
     );

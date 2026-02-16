@@ -10,11 +10,31 @@ services:
             --https-keystore /home/wiremock_ssl_certs/wiremock-mockedteams.p12
         volumes:
             - ./wiremock-mappings/mockedteams:/home/wiremock/mappings
+            - ./wiremock-mappings/mockedteams/__files:/home/wiremock/__files
             - ./sslcerts:/home/wiremock_ssl_certs
         networks:
             e2e:
                 aliases:
                     - mockedteams.atlassian.net
+                    - jira.mockeddomain.com
+        expose:
+            - 443
+
+    wiremock-bitbucket:
+        image: wiremock/wiremock
+        command: >
+            --https-port 443
+            --verbose
+            --https-keystore /home/wiremock_ssl_certs/wiremock-bitbucket.p12
+        volumes:
+            - ./wiremock-mappings/bitbucket:/home/wiremock/mappings
+            - ./sslcerts:/home/wiremock_ssl_certs
+        networks:
+            e2e:
+                aliases:
+                    - bitbucket.mockeddomain.com
+                    - bitbucket.org
+                    - api.bitbucket.org
         expose:
             - 443
 
@@ -24,9 +44,14 @@ services:
             - ${PWD}/..:/atlascode
         environment:
             - NODE_TLS_REJECT_UNAUTHORIZED=0
+            - ONLYSERVER
+            - TARGET
+            - DISABLE_ANALYTICS=1
         depends_on:
             - wiremock-mockedteams
+            - wiremock-bitbucket
         networks:
             - e2e
         ports:
             - '9988:9988'
+            - '31415:31415'

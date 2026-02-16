@@ -1,9 +1,9 @@
-import { ConfigurationChangeEvent, Disposable, TreeItem } from 'vscode';
+import { RovodevStaticConfig } from 'src/rovo-dev/api/rovodevStaticConfig';
+import { ConfigurationChangeEvent, Disposable, Uri } from 'vscode';
 
 import { Product, ProductJira } from '../../atlclients/authInfo';
 import { configuration } from '../../config/configuration';
 import { Container } from '../../container';
-import { loginToJiraMessageNode } from '../jira/treeViews/utils';
 import { NotificationManagerImpl, NotificationNotifier, NotificationType } from './notificationManager';
 
 export class AuthNotifier extends Disposable implements NotificationNotifier {
@@ -29,7 +29,7 @@ export class AuthNotifier extends Disposable implements NotificationNotifier {
         this._jiraEnabled = Container.config.jira.enabled;
     }
 
-    public dispose() {
+    public override dispose() {
         this._disposable.forEach((d) => d.dispose());
     }
 
@@ -41,17 +41,25 @@ export class AuthNotifier extends Disposable implements NotificationNotifier {
     }
 
     public fetchNotifications(): void {
+        if (RovodevStaticConfig.isBBY) {
+            return;
+        }
         this.checkJiraAuth();
         // we explicitly are not checking for bitbucket auth here: https://www.loom.com/share/0e96dcef1e524166929057074fc25e40?sid=6edcc48e-7ee8-46cb-a700-14fbd779b6de
     }
 
     private checkJiraAuth(): void {
-        this.checkAuth(ProductJira, 'jira.login', 'Log in to Jira to view & manage work items', loginToJiraMessageNode);
+        this.checkAuth(
+            ProductJira,
+            'jira.login',
+            'Log in to Jira to view & manage work items',
+            Uri.parse('Please login to Jira'),
+        );
     }
 
-    private checkAuth(product: Product, notificationId: string, message: string, treeItem: TreeItem): void {
+    private checkAuth(product: Product, notificationId: string, message: string, uri: Uri): void {
         if (!this.isEnabled(product)) {
-            NotificationManagerImpl.getInstance().clearNotificationsByUri(treeItem.resourceUri!);
+            NotificationManagerImpl.getInstance().clearNotificationsByUri(uri);
             return;
         }
         const numberOfAuth =
@@ -60,7 +68,7 @@ export class AuthNotifier extends Disposable implements NotificationNotifier {
         if (numberOfAuth === 0) {
             NotificationManagerImpl.getInstance().addNotification({
                 id: notificationId,
-                uri: treeItem.resourceUri!,
+                uri: uri,
                 notificationType: NotificationType.LoginNeeded,
                 message: message,
                 product: product,
@@ -68,7 +76,7 @@ export class AuthNotifier extends Disposable implements NotificationNotifier {
             });
             return;
         }
-        NotificationManagerImpl.getInstance().clearNotificationsByUri(treeItem.resourceUri!);
+        NotificationManagerImpl.getInstance().clearNotificationsByUri(uri);
     }
 
     private isEnabled(product: Product): boolean {

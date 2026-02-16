@@ -49,6 +49,7 @@ export interface OAuthResponse {
     receivedAt: number;
     user: UserInfo;
     accessibleResources: Array<AccessibleResource>;
+    scopes?: Array<string>;
 }
 
 export enum AuthInfoState {
@@ -59,6 +60,11 @@ export enum AuthInfoState {
 export interface AuthInfo {
     user: UserInfo;
     state: AuthInfoState;
+    access?: string;
+    expirationDate?: number;
+    recievedAt?: number;
+    refresh?: string;
+    scopes?: Array<string>;
 }
 
 export interface OAuthInfo extends AuthInfo {
@@ -67,6 +73,7 @@ export interface OAuthInfo extends AuthInfo {
     expirationDate?: number;
     iat?: number;
     recievedAt: number;
+    scopes?: Array<string>;
 }
 
 export interface PATAuthInfo extends AuthInfo {
@@ -194,19 +201,19 @@ export function isEmptySiteInfo(a: any): boolean {
     );
 }
 
-export function isOAuthInfo(a: any): a is OAuthInfo {
-    return a && (<OAuthInfo>a).access !== undefined && (<OAuthInfo>a).refresh !== undefined;
+export function isOAuthInfo(a?: AuthInfo): a is OAuthInfo {
+    return !!a && (<OAuthInfo>a).access !== undefined && (<OAuthInfo>a).refresh !== undefined;
 }
 
-export function isBasicAuthInfo(a: any): a is BasicAuthInfo {
-    return a && (<BasicAuthInfo>a).username !== undefined && (<BasicAuthInfo>a).password !== undefined;
+export function isBasicAuthInfo(a?: AuthInfo): a is BasicAuthInfo {
+    return !!a && (<BasicAuthInfo>a).username !== undefined && (<BasicAuthInfo>a).password !== undefined;
 }
 
-export function isPATAuthInfo(a: any): a is PATAuthInfo {
-    return a && (<PATAuthInfo>a).token !== undefined;
+export function isPATAuthInfo(a?: AuthInfo): a is PATAuthInfo {
+    return !!a && (<PATAuthInfo>a).token !== undefined;
 }
 
-export function getSecretForAuthInfo(info: any): string {
+export function getSecretForAuthInfo(info: AuthInfo): string {
     if (isOAuthInfo(info)) {
         return info.access + info.refresh;
     }

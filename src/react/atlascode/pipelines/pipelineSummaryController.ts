@@ -1,5 +1,5 @@
-import { defaultStateGuard, ReducerAction } from '@atlassianlabs/guipi-core-controller';
 import React, { useCallback, useMemo, useReducer } from 'react';
+import { defaultStateGuard, ReducerAction } from 'src/ipc/messaging';
 
 import { CommonActionType } from '../../../lib/ipc/fromUI/common';
 import { PipelineSummaryAction, PipelineSummaryActionType } from '../../../lib/ipc/fromUI/pipelineSummary';
@@ -8,7 +8,6 @@ import {
     PipelineSummaryInitMessage,
     PipelineSummaryMessage,
     PipelineSummaryMessageType,
-    PipelineSummaryResponse,
 } from '../../../lib/ipc/toUI/pipelineSummary';
 import { PipelineLogReference, PipelineStep } from '../../../pipelines/model';
 import { useMessagingApi } from '../messagingApi';
@@ -105,9 +104,7 @@ export function usePipelineSummaryController(): [PipelineSummaryState, PipelineS
         }
     }, []);
 
-    const [postMessage] = useMessagingApi<PipelineSummaryAction, PipelineSummaryMessage, PipelineSummaryResponse>(
-        onMessageHandler,
-    );
+    const { postMessage } = useMessagingApi<PipelineSummaryAction, PipelineSummaryMessage, never>(onMessageHandler);
 
     const sendRefresh = useCallback((): void => {
         dispatch({

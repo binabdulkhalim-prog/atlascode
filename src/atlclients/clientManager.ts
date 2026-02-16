@@ -12,7 +12,6 @@ import { ServerRepositoriesApi } from '../bitbucket/bitbucket-server/repositorie
 import { ClientError, HTTPClient } from '../bitbucket/httpClient';
 import { BitbucketApi } from '../bitbucket/model';
 import { configuration } from '../config/configuration';
-import { cannotGetClientFor } from '../constants';
 import { Container } from '../container';
 import {
     basicJiraTransportFactory,
@@ -29,6 +28,7 @@ import { Time } from '../util/time';
 import {
     AuthInfo,
     AuthInfoState,
+    BasicAuthInfo,
     DetailedSiteInfo,
     isBasicAuthInfo,
     isOAuthInfo,
@@ -36,22 +36,23 @@ import {
     ProductJira,
 } from './authInfo';
 import { BasicInterceptor } from './basicInterceptor';
-import { Negotiator } from './negotiate';
 
 const oauthTTL: number = 45 * Time.MINUTES;
 const serverTTL: number = Time.FOREVER;
-const GRACE_PERIOD = 10 * Time.MINUTES;
 
-function sleep(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
+export type ValidBasicAuthSiteData = {
+    authInfo: BasicAuthInfo;
+    host: string;
+    siteCloudId: string;
+    isValid: boolean;
+    isStaging: boolean;
+};
 
 export class ClientManager implements Disposable {
     private _clients: CacheMap = new CacheMap();
     private _queue = new PQueue({ concurrency: 1 });
     private _agentChanged: boolean = false;
     private hasWarnedOfFailure = false;
-    private negotiator: Negotiator;
 
     constructor(context: ExtensionContext) {
         context.subscriptions.push(
@@ -59,7 +60,6 @@ export class ClientManager implements Disposable {
             Container.siteManager.onDidSitesAvailableChange(this.onSitesDidChange, this),
         );
         this.onConfigurationChanged(configuration.initializingChangeEvent);
-        this.negotiator = new Negotiator(context.globalState);
     }
 
     dispose() {
@@ -158,7 +158,7 @@ export class ClientManager implements Disposable {
             newClient = await this._queue.add(async () => {
                 return this.getClient<JiraClient<DetailedSiteInfo>>(site, (info) => {
                     Logger.debug(`getClient factory`);
-                    let client: any = undefined;
+                    let client: JiraClient<DetailedSiteInfo> | undefined = undefined;
 
                     if (isOAuthInfo(info)) {
                         Logger.debug(`${tag}: creating client for ${site.baseApiUrl}`);
@@ -190,16 +190,76 @@ export class ClientManager implements Disposable {
                             jiraTokenAuthProvider(info.token),
                             getAgent,
                         );
+                    } else {
+                        throw new Error('Unable to create the Jira client: auth method unknown');
                     }
                     Logger.debug(`${tag}: client created`);
                     return client;
                 });
             });
         } catch (e) {
-            Logger.error(e, `Failed to refresh tokens`);
             throw e;
         }
-        return newClient!;
+
+        // test if Cloud API Token is still good
+        if (site.isCloud && isBasicAuthInfo(await Container.credentialManager.getAuthInfo(site, false))) {
+            await newClient.getCurrentUser();
+        }
+
+        return newClient;
+    }
+
+    public async getValidBasicAuthCloudSites(): Promise<ValidBasicAuthSiteData[]> {
+        try {
+            const allJiraSites = Container.siteManager.getSitesAvailable(ProductJira);
+
+            const promises = allJiraSites.map(async (site) => {
+                if (!site.isCloud && !site.host.endsWith('.jira-dev.com')) {
+                    return;
+                }
+
+                const authInfo = await Container.credentialManager.getApiTokenIfExists(site);
+
+                if (!authInfo) {
+                    return;
+                }
+
+                // verify the credentials work
+                let isValid: boolean;
+                try {
+                    await this.jiraClient(site);
+                    isValid = true;
+                } catch {
+                    isValid = false;
+                }
+
+                return {
+                    authInfo,
+                    host: site.host,
+                    siteCloudId: site.id,
+                    isValid,
+                    isStaging: site.host.endsWith('.jira-dev.com'),
+                };
+            });
+
+            const results = (await Promise.all(promises)).filter((res) => res !== undefined);
+
+            return results.sort((a, b) => {
+                return a.host.localeCompare(b.host);
+            });
+        } catch (error) {
+            Logger.error(error, 'Error checking for Rovo Dev Entitlement');
+            return [];
+        }
+    }
+
+    public async getCloudPrimarySite(): Promise<ValidBasicAuthSiteData | undefined> {
+        const results = await this.getValidBasicAuthCloudSites();
+        if (results.length === 0) {
+            return undefined;
+        }
+
+        return results.filter((s) => s.isStaging)[0] || results[0];
     }
 
     private createOAuthHTTPClient(site: DetailedSiteInfo, token: string): HTTPClient {
@@ -263,10 +323,9 @@ export class ClientManager implements Disposable {
         let client: T | undefined = undefined;
 
         Logger.debug(`Creating client for ${site.baseApiUrl}`);
-        let credentials = await Container.credentialManager.getAuthInfo(site, false);
+        const credentials = await Container.credentialManager.getAuthInfo(site, false);
 
         if (credentials?.state === AuthInfoState.Invalid) {
-            Logger.error(new Error('Error creating client: credentials state is Invalid'));
             if (!this.hasWarnedOfFailure) {
                 window
                     .showErrorMessage(
@@ -283,43 +342,16 @@ export class ClientManager implements Disposable {
             return undefined;
         }
 
-        if (site.product.key === ProductJira.key && isOAuthInfo(credentials) && credentials.expirationDate) {
-            const diff = credentials.expirationDate - Date.now();
-            Logger.debug(`${Math.floor(diff / 1000)} seconds remaining for auth token.`);
-            if (diff > GRACE_PERIOD) {
-                Logger.debug(`Using existing auth token.`);
-                client = factory(credentials);
-                this._clients.setItem(this.keyForSite(site), client, diff);
-                return client;
-            }
-            Logger.debug(`Need new auth token.`);
-        }
-
-        if (this.negotiator.thisIsTheResponsibleProcess()) {
-            Logger.debug(`Refreshing credentials.`);
-            try {
-                await Container.credentialManager.refreshAccessToken(site);
-            } catch (e) {
-                Logger.debug(`error refreshing token ${e}`);
-                return Promise.reject(`${cannotGetClientFor}: ${site.product.name} ... ${e}`);
-            }
-        } else {
-            Logger.debug(`This process isn't in charge of refreshing credentials.`);
-            await this.negotiator.requestTokenRefreshForSite(JSON.stringify(site));
-            await sleep(5000);
-        }
-
-        credentials = await Container.credentialManager.getAuthInfo(site, false); // we might be able to take cached version
-
         if (credentials) {
             client = factory(credentials);
 
             // Figure out the TTL
-            let ttl = oauthTTL;
+            let ttl: number;
             if (isOAuthInfo(credentials)) {
                 if (credentials.expirationDate) {
-                    const diff = credentials.expirationDate - Date.now();
-                    ttl = diff;
+                    ttl = credentials.expirationDate - Date.now();
+                } else {
+                    ttl = oauthTTL;
                 }
             } else {
                 ttl = serverTTL;
@@ -334,7 +366,7 @@ export class ClientManager implements Disposable {
         return client;
     }
 
-    private async getClient<T>(site: DetailedSiteInfo, factory: (info: AuthInfo) => any): Promise<T> {
+    private async getClient<T>(site: DetailedSiteInfo, factory: (info: AuthInfo) => T): Promise<T> {
         let client: T | undefined = undefined;
         client = this._clients.getItem<T>(this.keyForSite(site));
         if (!client) {
@@ -353,6 +385,8 @@ export class ClientManager implements Disposable {
             this._agentChanged = false;
         }
 
-        return client ? client : Promise.reject(new Error(`${cannotGetClientFor}: ${site.product.name}`));
+        return client
+            ? client
+            : Promise.reject(new Error(`Unable to connect to ${site.product.name}. Please sign in again to continue.`));
     }
 }

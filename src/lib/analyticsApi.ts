@@ -1,5 +1,8 @@
+import { IssueSuggestionSettings } from 'src/config/model';
+import { QuickFlowAnalyticsEvent } from 'src/onboarding/quickFlow/types';
+
 import { DeepLinkEventErrorType } from '../analytics';
-import { UIErrorInfo } from '../analyticsTypes';
+import { CreateIssueSource, FeedbackSentEvent, UIErrorInfo } from '../analyticsTypes';
 import { DetailedSiteInfo, Product, SiteInfo } from '../atlclients/authInfo';
 
 export interface AnalyticsApi {
@@ -7,21 +10,27 @@ export interface AnalyticsApi {
     fireUpgradedEvent(version: string, previousVersion: string): Promise<void>;
     fireLaunchedEvent(
         location: string,
+        ideUriScheme: string,
         numJiraCloudAuthed: number,
         numJiraDcAuthed: number,
         numBitbucketCloudAuthed: number,
         numBitbucketDcAuthed: number,
+        isJiraEnabled: boolean,
+        isBitbucketEnabled: boolean,
+        isRovoDevEnabled: boolean,
     ): Promise<void>;
     fireFeatureChangeEvent(featureId: string, enabled: boolean): Promise<void>;
     fireAuthenticatedEvent(site: DetailedSiteInfo): Promise<void>;
+    fireAiInstallCompletedEvent(site: DetailedSiteInfo): Promise<void>;
     fireLoggedOutEvent(site: DetailedSiteInfo): Promise<void>;
     fireIssueCreatedEvent(site: DetailedSiteInfo, issueKey: string): Promise<void>;
     fireIssueTransitionedEvent(site: DetailedSiteInfo, issueKey: string): Promise<void>;
     fireIssueUrlCopiedEvent(): Promise<void>;
     fireIssueCommentEvent(site: DetailedSiteInfo): Promise<void>;
     fireIssueWorkStartedEvent(site: DetailedSiteInfo, pushBranchToRemoteChecked: boolean): Promise<void>;
+    fireIssueStartWorkErrorEvent(message: string, stack?: string): Promise<void>;
     fireIssueUpdatedEvent(site: DetailedSiteInfo, issueKey: string, fieldName: string, fieldKey: string): Promise<void>;
-    fireStartIssueCreationEvent(source: string, product: Product): Promise<void>;
+    fireStartIssueCreationEvent(source: CreateIssueSource, product: Product): Promise<void>;
     firePrCreatedEvent(site: DetailedSiteInfo): Promise<void>;
     firePrCommentEvent(site: DetailedSiteInfo): Promise<void>;
     firePrTaskEvent(site: DetailedSiteInfo, commentId?: string): Promise<void>;
@@ -52,4 +61,15 @@ export interface AnalyticsApi {
     fireExploreFeaturesButtonEvent(source: string): Promise<void>;
     firePipelineRerunEvent(site: DetailedSiteInfo, source: string): Promise<void>;
     fireUIErrorEvent(errorInfo: UIErrorInfo): Promise<void>;
+    fireQuickFlowEvent(event: QuickFlowAnalyticsEvent): Promise<void>;
+
+    fireFeedbackSentEvent(event: FeedbackSentEvent): Promise<void>;
+    fireApiTokenNudgeClickedEvent({ source }: { source: string }): Promise<void>;
+
+    // Issue Suggestions
+    fireIssueSuggestionGeneratedEvent(): Promise<void>;
+    fireIssueSuggestionFailedEvent(attributes: { error: string }): Promise<void>;
+    fireIssueSuggestionSettingsChangeEvent(newSettings: IssueSuggestionSettings): Promise<void>;
+
+    fireApiTokenRetainedEvent(): Promise<void>;
 }

@@ -1,4 +1,7 @@
 import {
+    aiInstallCompletedEvent,
+    apiTokenNudgeClickedEvent,
+    apiTokenRetainedEvent,
     authenticateButtonEvent,
     authenticatedEvent,
     bbIssuesPaginationEvent,
@@ -9,6 +12,7 @@ import {
     exploreFeaturesButtonEvent,
     externalLinkEvent,
     featureChangeEvent,
+    feedbackSentEvent,
     focusCreateIssueEvent,
     focusCreatePullRequestEvent,
     focusIssueEvent,
@@ -16,6 +20,10 @@ import {
     installedEvent,
     issueCommentEvent,
     issueCreatedEvent,
+    issueStartWorkErrorEvent,
+    issueSuggestionFailedEvent,
+    issueSuggestionGeneratedEvent,
+    issueSuggestionSettingsChangeEvent,
     issueTransitionedEvent,
     issueUpdatedEvent,
     issueUrlCopiedEvent,
@@ -38,16 +46,20 @@ import {
     prPaginationEvent,
     prTaskEvent,
     prUrlCopiedEvent,
+    quickFlowEvent,
     saveManualCodeEvent,
+    sentryCapturedExceptionFailedEvent,
     startIssueCreationEvent,
     uiErrorEvent,
     upgradedEvent,
     viewScreenEvent,
 } from './analytics';
 import { AnalyticsClient } from './analytics-node-client/src/client.min.js';
-import { UIErrorInfo } from './analyticsTypes';
+import { CreateIssueSource, FeedbackSentEvent, UIErrorInfo } from './analyticsTypes';
 import { DetailedSiteInfo, Product, SiteInfo } from './atlclients/authInfo';
+import { IssueSuggestionSettings } from './config/model';
 import { AnalyticsApi } from './lib/analyticsApi';
+import { QuickFlowAnalyticsEvent } from './onboarding/quickFlow/types';
 
 export class VSCAnalyticsApi implements AnalyticsApi {
     private _analyticsClient: AnalyticsClient;
@@ -74,17 +86,25 @@ export class VSCAnalyticsApi implements AnalyticsApi {
 
     public async fireLaunchedEvent(
         location: string,
+        ideUriScheme: string,
         numJiraCloudAuthed: number,
         numJiraDcAuthed: number,
         numBitbucketCloudAuthed: number,
         numBitbucketDcAuthed: number,
+        isJiraEnabled: boolean,
+        isBitbucketEnabled: boolean,
+        isRovoDevEnabled: boolean,
     ): Promise<void> {
         return launchedEvent(
             location,
+            ideUriScheme,
             numJiraCloudAuthed,
             numJiraDcAuthed,
             numBitbucketCloudAuthed,
             numBitbucketDcAuthed,
+            isJiraEnabled,
+            isBitbucketEnabled,
+            isRovoDevEnabled,
         ).then((e) => {
             this._analyticsClient.sendTrackEvent(e);
         });
@@ -98,6 +118,12 @@ export class VSCAnalyticsApi implements AnalyticsApi {
 
     public async fireAuthenticatedEvent(site: DetailedSiteInfo, isOnboarding?: boolean): Promise<void> {
         return authenticatedEvent(site, isOnboarding).then((e) => {
+            this._analyticsClient.sendTrackEvent(e);
+        });
+    }
+
+    public async fireAiInstallCompletedEvent(site: DetailedSiteInfo): Promise<void> {
+        return aiInstallCompletedEvent(site).then((e) => {
             this._analyticsClient.sendTrackEvent(e);
         });
     }
@@ -138,6 +164,12 @@ export class VSCAnalyticsApi implements AnalyticsApi {
         });
     }
 
+    public async fireIssueStartWorkErrorEvent(message: string, stack?: string): Promise<void> {
+        return issueStartWorkErrorEvent({ message, stack }).then((e) => {
+            this._analyticsClient.sendTrackEvent(e);
+        });
+    }
+
     public async fireIssueUpdatedEvent(
         site: DetailedSiteInfo,
         issueKey: string,
@@ -149,7 +181,7 @@ export class VSCAnalyticsApi implements AnalyticsApi {
         });
     }
 
-    public async fireStartIssueCreationEvent(source: string, product: Product): Promise<void> {
+    public async fireStartIssueCreationEvent(source: CreateIssueSource, product: Product): Promise<void> {
         return startIssueCreationEvent(source, product).then((e) => {
             this._analyticsClient.sendTrackEvent(e);
         });
@@ -333,5 +365,47 @@ export class VSCAnalyticsApi implements AnalyticsApi {
         return uiErrorEvent(errorInfo).then(async (e) => {
             this._analyticsClient.sendTrackEvent(e);
         });
+    }
+
+    public async fireQuickFlowEvent(event: QuickFlowAnalyticsEvent): Promise<void> {
+        return quickFlowEvent(event).then((e) => {
+            this._analyticsClient.sendTrackEvent(e);
+        });
+    }
+
+    public async fireFeedbackSentEvent(event: FeedbackSentEvent): Promise<void> {
+        return feedbackSentEvent(event).then((e) => {
+            this._analyticsClient.sendTrackEvent(e);
+        });
+    }
+
+    async fireIssueSuggestionGeneratedEvent() {
+        const event = await issueSuggestionGeneratedEvent();
+        this._analyticsClient.sendTrackEvent(event);
+    }
+
+    async fireIssueSuggestionFailedEvent({ error }: { error: string }) {
+        const event = await issueSuggestionFailedEvent(error);
+        this._analyticsClient.sendTrackEvent(event);
+    }
+
+    async fireIssueSuggestionSettingsChangeEvent(newSettings: IssueSuggestionSettings) {
+        const event = await issueSuggestionSettingsChangeEvent(newSettings);
+        this._analyticsClient.sendTrackEvent(event);
+    }
+
+    async fireApiTokenNudgeClickedEvent({ source }: { source: string }) {
+        const event = await apiTokenNudgeClickedEvent(source);
+        this._analyticsClient.sendTrackEvent(event);
+    }
+
+    async fireApiTokenRetainedEvent() {
+        const event = await apiTokenRetainedEvent();
+        this._analyticsClient.sendTrackEvent(event);
+    }
+
+    async fireSentryCapturedExceptionFailedEvent({ error }: { error: string }) {
+        const event = await sentryCapturedExceptionFailedEvent(error);
+        this._analyticsClient.sendTrackEvent(event);
     }
 }

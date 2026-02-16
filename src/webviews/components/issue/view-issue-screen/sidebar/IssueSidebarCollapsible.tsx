@@ -1,7 +1,7 @@
 import Button from '@atlaskit/button';
-import ChevronDownIcon from '@atlaskit/icon/glyph/chevron-down';
-import ChevronUpIcon from '@atlaskit/icon/glyph/chevron-up';
-import { Box } from '@material-ui/core';
+import ChevronDownIcon from '@atlaskit/icon/core/chevron-down';
+import ChevronUpIcon from '@atlaskit/icon/core/chevron-up';
+import { Box } from '@mui/material';
 import React from 'react';
 export type SidebarItem = {
     itemLabel?: string;
@@ -47,9 +47,9 @@ const CollapsibleButton = ({
             onClick={toggleOpen}
             iconAfter={
                 isOpen ? (
-                    <ChevronDownIcon label="Collapse" size="medium" />
+                    <ChevronDownIcon label="Collapse" size="small" />
                 ) : (
-                    <ChevronUpIcon label="Expand" size="medium" />
+                    <ChevronUpIcon label="Expand" size="small" />
                 )
             }
         >

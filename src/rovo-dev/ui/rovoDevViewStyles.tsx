@@ -1,0 +1,114 @@
+import React from 'react';
+
+const isHighContrastTheme = (): boolean => {
+    return (
+        document.body.classList.contains('vscode-high-contrast') ||
+        document.body.classList.contains('vscode-high-contrast-light')
+    );
+};
+
+export const rovoDevTextareaStyles: React.CSSProperties = {
+    width: '100%',
+    minHeight: '20px',
+    background: 'inherit',
+    color: 'var(--vscode-input-foreground)',
+    resize: 'none',
+    outline: 'none',
+    border: 'none',
+    fontFamily: 'var(--vscode-font-family)',
+    fontSize: 'var(--vscode-font-size)',
+};
+
+export const rovoDevPromptButtonStyles: React.CSSProperties = {
+    color: 'var(--vscode-input-foreground) !important',
+    border: isHighContrastTheme()
+        ? '2px solid var(--vscode-contrastBorder)'
+        : '1px solid var(--vscode-editorWidget-border)',
+    backgroundColor: 'var(--vscode-input-background)',
+    marginLeft: '4px',
+    marginTop: '1px',
+    marginBottom: '1px',
+};
+
+export const rovoDevPromptButtonDisabledStyles: React.CSSProperties = {
+    color: 'var(--vscode-disabledForeground) !important',
+    backgroundColor: 'unset',
+};
+
+export const rovoDevPromptButtonToggledStyles: React.CSSProperties = {
+    ...rovoDevPromptButtonStyles,
+    margin: '0 4px',
+    padding: '0 4px',
+    gap: '2px',
+    color: 'var(--vscode-inputOption-activeForeground) !important',
+    backgroundColor: 'var(--vscode-inputOption-activeBackground)',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: '4px',
+    border: isHighContrastTheme()
+        ? '2px solid var(--vscode-contrastBorder)'
+        : '1px solid var(--vscode-inputOption-activeBorder)',
+};
+
+export function rovoDevDeepPlanStylesSelector(isClicked: boolean, isDisabled: boolean): React.CSSProperties {
+    if (isClicked && isDisabled) {
+        return { ...rovoDevPromptButtonToggledStyles, ...rovoDevPromptButtonDisabledStyles };
+    } else if (isDisabled) {
+        return { ...rovoDevPromptButtonStyles, ...rovoDevPromptButtonDisabledStyles };
+    } else if (isClicked) {
+        return rovoDevPromptButtonToggledStyles;
+    } else {
+        return rovoDevPromptButtonStyles;
+    }
+}
+
+export const chatMessageStyles: React.CSSProperties = {
+    maxWidth: '100%',
+    marginBottom: '8px',
+    padding: '8px 12px',
+    borderRadius: '8px',
+    position: 'relative',
+};
+
+export const agentMessageStyles: React.CSSProperties = {
+    backgroundColor: 'var(--vscode-sideBar-background)',
+    alignSelf: 'flex-start',
+    borderBottomLeftRadius: '0px',
+};
+
+export const errorMessageStyles: React.CSSProperties = {
+    alignSelf: 'flex-start',
+    width: '100%',
+    border: isHighContrastTheme()
+        ? '2px solid var(--vscode-contrastBorder)'
+        : '1px solid var(--vscode-editorWidget-border)',
+    borderBottomLeftRadius: '8px',
+    padding: '8px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '8px',
+    textAlign: 'left',
+};
+
+export const messageContentStyles: React.CSSProperties = {
+    whiteSpace: 'normal',
+    wordBreak: 'break-word',
+    color: 'var(--vscode-editor-foreground)',
+};
+
+export const inChatButtonStyles: React.CSSProperties = {
+    padding: '6px 12px',
+    background: 'var(--vscode-button-background)',
+    color: 'var(--vscode-button-foreground)',
+    border: isHighContrastTheme()
+        ? '2px solid var(--vscode-contrastBorder)'
+        : '1px solid var(--vscode-editorWidget-border)',
+    borderRadius: '4px',
+};
+
+export const inChatSecondaryButtonStyles: React.CSSProperties = {
+    ...inChatButtonStyles,
+    background: 'var(--vscode-button-secondaryBackground)',
+    color: 'var(--vscode-button-secondaryForeground)',
+};

@@ -15,6 +15,8 @@ describe('IssueSidebarButtonGroup', () => {
     const mockFetchUsers = jest.fn();
     const mockHandleStatusChange = jest.fn();
     const mockHandleStartWork = jest.fn();
+    const mockHandleCloneIssue = jest.fn();
+    const mockHandleShareIssue = jest.fn();
 
     const defaultProps = {
         handleRefresh: mockHandleRefresh,
@@ -30,7 +32,10 @@ describe('IssueSidebarButtonGroup', () => {
         fetchUsers: mockFetchUsers,
         handleStatusChange: mockHandleStatusChange,
         handleStartWork: mockHandleStartWork,
+        handleCloneIssue: mockHandleCloneIssue,
+        handleShareIssue: mockHandleShareIssue,
         transitions: [] as Transition[],
+        issueUrl: 'https://test.atlassian.net/browse/TEST-123',
     };
 
     it('renders without crashing', () => {
@@ -40,7 +45,7 @@ describe('IssueSidebarButtonGroup', () => {
 
     it('calls handleRefresh when the refresh button is clicked', () => {
         const { getByLabelText } = render(<IssueSidebarButtonGroup {...defaultProps} />);
-        const refreshButton = getByLabelText('refresh');
+        const refreshButton = getByLabelText('Refresh');
         fireEvent.click(refreshButton);
         expect(mockHandleRefresh).toHaveBeenCalled();
     });

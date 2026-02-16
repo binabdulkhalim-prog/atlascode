@@ -1,7 +1,9 @@
-export const ExtensionId = 'atlassian.atlascode';
+import packageJson from 'package.json';
+
+export const ExtensionId = `${packageJson.publisher}.${packageJson.name}`;
 export const ConfigNamespace = 'atlascode';
 export const extensionOutputChannelName = 'Atlassian';
-export const JiraCreateSiteAndProjectKey = 'jira.lastCreateSiteAndProject';
+export const JiraPreSelectedCreateKey = 'jira.lastCreatePreSelectedValues';
 export const JiraEnabledKey = 'jira.enabled';
 export const BitbucketEnabledKey = 'bitbucket.enabled';
 export const JiraHoverProviderConfigurationKey = 'jira.hover.enabled';
@@ -14,7 +16,6 @@ export const GlobalStateVersionKey = 'atlascodeVersion';
 export const AxiosUserAgent = 'atlascode/2.x axios/0.19.2';
 
 export const bbAPIConnectivityError = new Error('cannot connect to bitbucket api');
-export const cannotGetClientFor = 'cannot get client for';
 
 export const enum Commands {
     BitbucketSelectContainer = 'atlascode.bb.selectContainer',
@@ -29,6 +30,7 @@ export const enum Commands {
     BitbucketShowDeclinedPullRequests = 'atlascode.bb.showDeclinedPullRequests',
     BitbucketPullRequestFilters = 'atlascode.bb.showPullRequestFilters',
     JiraSearchIssues = 'atlascode.jira.searchIssues',
+    JiraSearchAllIssues = 'atlascode.jira.searchAllIssues',
     BitbucketShowPullRequestDetails = 'atlascode.bb.showPullRequestDetails',
     BitbucketPullRequestsNextPage = 'atlascode.bb.pullReqeustsNextPage',
     RefreshPullRequestExplorerNode = 'atlascode.bb.refreshPullRequest',
@@ -45,7 +47,10 @@ export const enum Commands {
     BitbucketToggleCommentsVisibility = 'atlascode.bb.toggleCommentsVisibility',
     EditThisFile = 'atlascode.bb.editThisFile',
     CreateIssue = 'atlascode.jira.createIssue',
+    CreateIssueFromSidebar = 'atlascode.jira.createIssue.fromSidebar',
+    CreateIssueFromIssueContext = 'atlascode.jira.createIssue.fromIssueContext',
     RefreshAssignedWorkItemsExplorer = 'atlascode.jira.refreshAssignedWorkItemsExplorer',
+    JiraFilter = 'atlascode.jira.filter',
     RefreshCustomJqlExplorer = 'atlascode.jira.refreshCustomJqlExplorer',
     AddJiraSite = 'atlascode.jira.addJiraSite',
     ShowJiraIssueSettings = 'atlascode.jira.showJiraIssueSettings',
@@ -57,10 +62,10 @@ export const enum Commands {
     ShowIssueForSiteIdAndKey = 'atlascode.jira.showIssueForSiteIdAndKey',
     ShowIssueForURL = 'atlascode.jira.showIssueForURL',
     ShowConfigPage = 'atlascode.showConfigPage',
+    ShowConfigPageV3 = 'atlascode.showConfigPageV3',
     ShowConfigPageFromExtensionContext = 'atlascode.extensionContext.showConfigPage',
     ShowJiraAuth = 'atlascode.showJiraAuth',
     ShowBitbucketAuth = 'atlascode.showBitbucketAuth',
-    ShowOnboardingPage = 'atlascode.showOnboardingPage',
     ShowPullRequestDetailsPage = 'atlascode.showPullRequestDetailsPage',
     AssignIssueToMe = 'atlascode.jira.assignIssueToMe',
     TransitionIssue = 'atlascode.jira.transitionIssue',
@@ -78,6 +83,7 @@ export const enum Commands {
     DebugBitbucketSites = 'atlascode.debug.bitbucketSites',
     WorkbenchOpenRepository = 'atlascode.workbenchOpenRepository',
     WorkbenchOpenWorkspace = 'atlascode.workbenchOpenWorkspace',
+    WorkbenchOpenFolder = 'workbench.action.files.openFolder',
     CloneRepository = 'atlascode.cloneRepository',
     DisableHelpExplorer = 'atlascode.disableHelpExplorer',
     CreateNewJql = 'atlascode.jira.createNewJql',
@@ -85,4 +91,24 @@ export const enum Commands {
     InProgressIssue = 'atlascode.jira.inProgressIssue',
     DoneIssue = 'atlascode.jira.doneIssue',
     ShowOnboardingFlow = 'atlascode.showOnboardingFlow',
+    OpenNativeSettings = 'atlascode.openNativeSettings',
+    QuickAuth = 'atlascode.rovodev.quickAuth',
+    JiraLogin = 'atlascode.jira.login',
+    JiraAPITokenLogin = 'atlascode.jira.apiTokenLogin',
+    ExpandCreateWorkItemWebview = 'atlascode.jira.expandCreateWorkItem',
+    CopyImageElement = 'atlascode.jira.copyImageElement',
+
+    // Debug mode-only commands
+    DebugQuickCommand = 'atlascode.debug.quickCommand',
+    DebugQuickLogin = 'atlascode.debug.quickLogin',
+    DebugQuickLogout = 'atlascode.debug.quickLogout',
+
+    // Extension management commands
+    AddRecommendedExtension = 'atlascode.addRecommendedExtension',
 }
+
+// Jira projects field pagination
+export const ProjectsPagination = {
+    pageSize: 50,
+    startAt: 0,
+} as const;

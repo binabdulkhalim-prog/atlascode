@@ -1,7 +1,7 @@
-import { Box, Grid, IconButton, Link, TextField, Typography } from '@material-ui/core';
-import Visibility from '@material-ui/icons/Visibility';
-import VisibilityOff from '@material-ui/icons/VisibilityOff';
-import React from 'react';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import { Box, Grid, IconButton, Link, TextField } from '@mui/material';
+import React, { useMemo } from 'react';
 import { BasicAuthInfo } from 'src/atlclients/authInfo';
 import { SiteWithAuthInfo } from 'src/lib/ipc/toUI/config';
 
@@ -14,6 +14,7 @@ type JiraBasicAuthFormProps = {
     authFormState: AuthFormState;
     updateState: (state: AuthFormState) => void;
     preventClickDefault: (event: React.MouseEvent<HTMLButtonElement>) => void;
+    onPasswordKeyDown?: (event: React.KeyboardEvent) => void;
 };
 
 export const JiraBasicAuthForm = ({
@@ -23,31 +24,23 @@ export const JiraBasicAuthForm = ({
     authFormState,
     updateState,
     preventClickDefault,
+    onPasswordKeyDown,
 }: JiraBasicAuthFormProps) => {
+    const defaultSiteUsername = useMemo(
+        () => (defaultSiteWithAuth.auth as BasicAuthInfo).username || defaultSiteWithAuth.auth.user.email,
+        [defaultSiteWithAuth],
+    );
+
     return (
         <React.Fragment>
             <Grid item>
-                <Typography variant="body1">
-                    <Box fontWeight="fontWeightBold">This looks like a Jira Cloud site ☁</Box>
-                    <Box fontSize="small">
-                        You can use an{' '}
-                        <Link href="https://id.atlassian.com/manage-profile/security/api-tokens">API Token</Link> to
-                        connect to this site. Read more about Atlassian API tokens{' '}
-                        <Link href="https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/">
-                            here
-                        </Link>
-                        .
-                    </Box>
-                </Typography>
-            </Grid>
-            <Grid item>
                 <TextField
                     required
-                    margin="dense"
+                    size="small"
                     id="username"
                     name="username"
-                    label="Username"
-                    defaultValue={(defaultSiteWithAuth.auth as BasicAuthInfo).username}
+                    label="Email"
+                    defaultValue={defaultSiteUsername}
                     helperText={errors.username ? errors.username : undefined}
                     fullWidth
                     error={!!errors.username}
@@ -55,18 +48,21 @@ export const JiraBasicAuthForm = ({
                 />
             </Grid>
             <Grid item>
+                <Box fontSize="small">
+                    <Link href="https://id.atlassian.com/manage-profile/security/api-tokens">Create an API Token</Link>
+                </Box>
                 <TextField
                     required
-                    margin="dense"
+                    size="small"
                     id="password"
                     name="password"
-                    label="Password (API token)"
-                    defaultValue={(defaultSiteWithAuth.auth as BasicAuthInfo).password}
+                    label="API token"
                     type={authFormState.showPassword ? 'text' : 'password'}
                     helperText={errors.password ? errors.password : undefined}
                     fullWidth
                     error={!!errors.password}
                     inputRef={registerRequiredString}
+                    onKeyDown={onPasswordKeyDown}
                     InputProps={{
                         endAdornment: (
                             <IconButton
@@ -77,6 +73,7 @@ export const JiraBasicAuthForm = ({
                                     })
                                 }
                                 onMouseDown={preventClickDefault}
+                                size="large"
                             >
                                 {authFormState.showPassword ? (
                                     <Visibility fontSize="small" />

@@ -7,11 +7,19 @@ const compat = new FlatCompat({
     recommendedConfig: {},
     allConfig: {},
     overrideConfig: {},
-    warnIncompatible: true
+    warnIncompatible: true,
 });
 
 export default tseslint.config(
-    ...compat.plugins('@typescript-eslint', 'react', 'react-hooks', 'import', 'prettier', 'simple-import-sort'),
+    ...compat.plugins(
+        '@typescript-eslint',
+        'react',
+        'react-dom',
+        'react-hooks',
+        'import',
+        'prettier',
+        'simple-import-sort',
+    ),
     {
         languageOptions: {
             ecmaVersion: 2020,
@@ -28,13 +36,11 @@ export default tseslint.config(
                 es6: true,
             },
         },
-        ignores: [
-            "/src/analytics-node-client/src/client.min.js",
-            "/eslint.config.msj",
-        ],
+        ignores: ['/src/analytics-node-client/src/client.min.js', '/eslint.config.msj'],
         rules: {
             'prettier/prettier': 'error',
             'react/jsx-filename-extension': [2, { extensions: ['.js', '.jsx', '.ts', '.tsx'] }],
+            'react-dom/no-dangerously-set-innerhtml': 'error',
             'react-hooks/exhaustive-deps': 'error',
             '@typescript-eslint/await-thenable': 'error',
             '@typescript-eslint/naming-convention': [
@@ -44,16 +50,12 @@ export default tseslint.config(
                     format: ['PascalCase'],
                 },
             ],
-            'import/no-extraneous-dependencies': [
-                'error',
-                { devDependencies: true },
-            ],
+            'import/no-extraneous-dependencies': ['error', { devDependencies: true }],
             'no-restricted-imports': [
                 'error',
                 {
                     patterns: [
                         '@atlassianlabs/guipi-core-components/*',
-                        '@atlassianlabs/guipi-core-controller/*',
                         '@atlassianlabs/guipi-jira-components/*',
                         '@atlassianlabs/jira-metaui-client/*',
                         '@atlassianlabs/jira-metaui-transformer/*',
@@ -63,22 +65,28 @@ export default tseslint.config(
                     ],
                 },
             ],
-            "no-unused-vars": ["error", {
-                "vars": "all",
-                "args": "none",
-                "caughtErrors": "all",
-                "ignoreRestSiblings": false,
-            }],
+            'no-unused-vars': [
+                'error',
+                {
+                    vars: 'all',
+                    args: 'none',
+                    caughtErrors: 'all',
+                    ignoreRestSiblings: false,
+                },
+            ],
             'brace-style': 'off',
             'no-throw-literal': 'error',
             'no-var': 'error',
             'prefer-const': 'error',
             'no-cond-assign': 'error',
             'no-multi-assign': 'error',
-            'no-unused-expressions': ['error', {
-                "allowShortCircuit": true,
-                "allowTernary": true,
-            }],
+            'no-unused-expressions': [
+                'error',
+                {
+                    allowShortCircuit: true,
+                    allowTernary: true,
+                },
+            ],
             curly: 'error',
             eqeqeq: ['error', 'always'],
             semi: 'off',
@@ -100,5 +108,5 @@ export default tseslint.config(
     {
         name: 'atlascode-ts-config',
         files: ['**/*.ts', '**/*.tsx'],
-    }
+    },
 );

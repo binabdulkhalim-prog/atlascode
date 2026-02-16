@@ -5,25 +5,54 @@ export enum OutputLevel {
     Debug = 'debug',
 }
 
+export enum IssueSuggestionContextLevel {
+    TodoOnly = 'todoOnly',
+    CodeContext = 'codeContext',
+}
+
+export type IssueSuggestionSettings = {
+    isAvailable: boolean;
+    isEnabled: boolean;
+    level: IssueSuggestionContextLevel;
+};
+
+// Simplified representation of a TODO, used in IPC
+export type SimplifiedTodoIssueData = {
+    summary: string;
+    context: string;
+    position: {
+        line: number;
+        character: number;
+    };
+    uri: string;
+};
+
 export interface IConfig {
+    issueSuggestionContextLevel: IssueSuggestionContextLevel;
     outputLevel: OutputLevel;
     enableCharles: boolean;
     charlesCertPath: string;
     charlesDebugOnly: boolean;
-    offlineMode: boolean;
     showWelcomeOnInstall: boolean;
     jira: JiraConfig;
     bitbucket: BitbucketConfig;
     enableUIWS: boolean;
     enableCurlLogging: boolean;
     enableHttpsTunnel: boolean;
-    onlineCheckerUrls: string[];
     helpExplorerEnabled: boolean;
+    rovodev: RovoDevConfig;
+}
+
+export interface RovoDevConfig {
+    enabled: boolean;
+    debugPanelEnabled: boolean;
+    thinkingBlockEnabled: boolean;
+    showEntitlementNotifications: boolean;
 }
 
 export interface JiraConfig {
     enabled: boolean;
-    lastCreateSiteAndProject: SiteIdAndProjectKey;
+    lastCreatePreSelectedValues: LastCreatePreSelectedValues;
     explorer: JiraExplorer;
     issueMonitor: JiraIssueMonitor;
     statusbar: JiraStatusBar;
@@ -34,9 +63,10 @@ export interface JiraConfig {
     showCreateIssueProblems: boolean;
 }
 
-export type SiteIdAndProjectKey = {
+export type LastCreatePreSelectedValues = {
     siteId: string;
     projectKey: string;
+    issueTypeId: string;
 };
 
 export interface JiraStatusBar {
@@ -115,7 +145,6 @@ export interface BitbucketExplorer {
     nestFilesEnabled: boolean;
     refreshInterval: number;
     relatedJiraIssues: BitbucketRelatedJiraIssues;
-    relatedBitbucketIssues: BitbucketRelatedBitbucketIssues;
     notifications: BitbucketNotifications;
 }
 
@@ -179,7 +208,7 @@ const emptyStartWorkBranchTemplate: StartWorkBranchTemplate = {
 
 const emptyJiraConfig: JiraConfig = {
     enabled: true,
-    lastCreateSiteAndProject: { siteId: '', projectKey: '' },
+    lastCreatePreSelectedValues: { siteId: '', projectKey: '', issueTypeId: '' },
     explorer: emptyJiraExplorer,
     issueMonitor: emtpyIssueMonitor,
     statusbar: emptyJiraStatusBar,
@@ -190,11 +219,14 @@ const emptyJiraConfig: JiraConfig = {
     showCreateIssueProblems: false,
 };
 
-const emptyRelatedJiraIssues: BitbucketRelatedJiraIssues = {
-    enabled: true,
+const emptyRovoDevConfig: RovoDevConfig = {
+    enabled: false,
+    debugPanelEnabled: false,
+    thinkingBlockEnabled: false,
+    showEntitlementNotifications: false,
 };
 
-const emptyRelatedBitbucketIssues: BitbucketRelatedBitbucketIssues = {
+const emptyRelatedJiraIssues: BitbucketRelatedJiraIssues = {
     enabled: true,
 };
 
@@ -208,7 +240,6 @@ const emptyBitbucketExplorer: BitbucketExplorer = {
     nestFilesEnabled: true,
     refreshInterval: 5,
     relatedJiraIssues: emptyRelatedJiraIssues,
-    relatedBitbucketIssues: emptyRelatedBitbucketIssues,
     notifications: emptyBitbucketNotfications,
 };
 
@@ -251,17 +282,17 @@ const emptyBitbucketConfig: BitbucketConfig = {
 };
 
 export const emptyConfig: IConfig = {
+    issueSuggestionContextLevel: IssueSuggestionContextLevel.CodeContext,
     outputLevel: OutputLevel.Silent,
     enableCharles: false,
     charlesCertPath: '',
     charlesDebugOnly: false,
-    offlineMode: false,
     showWelcomeOnInstall: true,
     jira: emptyJiraConfig,
     bitbucket: emptyBitbucketConfig,
     enableUIWS: false,
     enableCurlLogging: false,
     enableHttpsTunnel: false,
-    onlineCheckerUrls: [],
     helpExplorerEnabled: true,
+    rovodev: emptyRovoDevConfig,
 };

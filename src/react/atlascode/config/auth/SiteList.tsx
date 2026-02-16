@@ -1,33 +1,38 @@
-import { JiraIcon } from '@atlassianlabs/guipi-jira-components';
+import CloudIcon from '@mui/icons-material/Cloud';
+import DomainIcon from '@mui/icons-material/Domain';
+import EditIcon from '@mui/icons-material/Edit';
+import ErrorIcon from '@mui/icons-material/Error';
+import LogoutIcon from '@mui/icons-material/Logout';
 import {
-    Avatar,
     Box,
     Divider,
     IconButton,
     List,
     ListItem,
-    ListItemAvatar,
     ListItemIcon,
     ListItemSecondaryAction,
     ListItemText,
-    makeStyles,
     Theme,
     Tooltip,
     Typography,
-} from '@material-ui/core';
-import CloudIcon from '@material-ui/icons/Cloud';
-import DeleteIcon from '@material-ui/icons/Delete';
-import DomainIcon from '@material-ui/icons/Domain';
-import EditIcon from '@material-ui/icons/Edit';
-import ErrorIcon from '@material-ui/icons/Error';
+} from '@mui/material';
+import { makeStyles } from '@mui/styles';
 import clsx from 'clsx';
 import React, { useContext } from 'react';
 import { uid } from 'react-uid';
 
-import { AuthInfoState, DetailedSiteInfo, emptyUserInfo, Product, ProductJira } from '../../../../atlclients/authInfo';
+import {
+    AuthInfoState,
+    DetailedSiteInfo,
+    emptyUserInfo,
+    isOAuthInfo,
+    Product,
+    ProductJira,
+} from '../../../../atlclients/authInfo';
 import { SiteWithAuthInfo } from '../../../../lib/ipc/toUI/config';
 import { useBorderBoxStyles } from '../../common/useBorderBoxStyles';
 import { ConfigControllerContext } from '../configController';
+import { deduplicateOAuthSites } from './siteDeduplication';
 
 type SiteListProps = {
     product: Product;
@@ -54,8 +59,6 @@ function generateListItems(
     edit: (site: SiteWithAuthInfo) => void,
     iconClassName: string,
 ): JSX.Element[] {
-    const fallbackImg = `images/${product.key}-icon.svg`;
-
     if (sites.length < 1) {
         return [
             <ListItem key="empty">
@@ -66,7 +69,8 @@ function generateListItems(
         ];
     }
     return sites.map((swa: SiteWithAuthInfo, i: number) => {
-        const avatarUrl = swa.site.avatarUrl && swa.site.avatarUrl.length > 0 ? swa.site.avatarUrl : fallbackImg;
+        // Get username from auth info
+        const username = swa.auth.user.email || swa.auth.user.displayName || swa.auth.user.id || 'Unknown User';
 
         return (
             <React.Fragment key={uid(swa, i)}>
@@ -78,28 +82,28 @@ function generateListItems(
                             <DomainIcon fontSize="small" className={iconClassName} />
                         )}
                     </ListItemIcon>
-                    <ListItemAvatar>
-                        <Avatar src={avatarUrl}>
-                            <JiraIcon />
-                        </Avatar>
-                    </ListItemAvatar>
-                    <ListItemText primary={swa.site.name} />
+                    <ListItemText primary={username} />
+                    <ListItemText secondary={swa.site.name} />
                     <ListItemSecondaryAction>
                         {swa.auth.state === AuthInfoState.Invalid && (
                             <Tooltip title="Credential Error">
-                                <IconButton edge="end" aria-label="error" onClick={() => edit(swa)}>
+                                <IconButton edge="end" aria-label="error" onClick={() => edit(swa)} size="large">
                                     <ErrorIcon fontSize="small" color="inherit" />
                                 </IconButton>
                             </Tooltip>
                         )}
-                        {!swa.site.isCloud && (
-                            <IconButton edge="end" aria-label="edit" onClick={() => edit(swa)}>
-                                <EditIcon fontSize="small" color="inherit" />
-                            </IconButton>
+                        {!isOAuthInfo(swa.auth) && (
+                            <Tooltip title="Edit">
+                                <IconButton edge="end" aria-label="edit" onClick={() => edit(swa)} size="large">
+                                    <EditIcon fontSize="small" color="inherit" />
+                                </IconButton>
+                            </Tooltip>
                         )}
-                        <IconButton edge="end" aria-label="delete" onClick={() => logout(swa.site)}>
-                            <DeleteIcon fontSize="small" color="inherit" />
-                        </IconButton>
+                        <Tooltip title="Logout">
+                            <IconButton edge="end" aria-label="delete" onClick={() => logout(swa.site)} size="large">
+                                <LogoutIcon fontSize="small" color="inherit" />
+                            </IconButton>
+                        </Tooltip>
                     </ListItemSecondaryAction>
                 </ListItem>
                 {sites.length !== i + 1 && <Divider />}
@@ -114,10 +118,15 @@ export const SiteList: React.FunctionComponent<SiteListProps> = ({ sites, produc
 
     const classes = useStyles();
 
+    // Deduplicate OAuth sites by username and update display names
+    const deduplicatedSites = deduplicateOAuthSites(sites);
+
+    // Sort sites alphabetically by site name
+    const sortedSites = deduplicatedSites.sort((a, b) => a.site.name.localeCompare(b.site.name));
+
     const editOrLogout = (siteWithAuth: SiteWithAuthInfo) => {
-        const site = siteWithAuth.site;
-        if (site.isCloud) {
-            controller.logout(site);
+        if (isOAuthInfo(siteWithAuth.auth)) {
+            controller.logout(siteWithAuth.site);
             const hostname = product.key === ProductJira.key ? 'atlassian.net' : 'bitbucket.org';
             controller.login({ host: hostname, product: product }, { user: emptyUserInfo, state: AuthInfoState.Valid });
         } else {
@@ -127,7 +136,7 @@ export const SiteList: React.FunctionComponent<SiteListProps> = ({ sites, produc
 
     return (
         <div className={clsx(classes.root, borderBox.box)}>
-            <List>{generateListItems(product, sites, controller.logout, editOrLogout, classes.iconStyle)}</List>
+            <List>{generateListItems(product, sortedSites, controller.logout, editOrLogout, classes.iconStyle)}</List>
         </div>
     );
 };

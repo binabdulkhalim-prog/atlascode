@@ -5,10 +5,13 @@ import { clientForSite } from '../../bitbucket/bbUtils';
 import { emptyRepo, Repo, WorkspaceRepo } from '../../bitbucket/model';
 import { StartWorkBranchTemplate } from '../../config/model';
 import { Container } from '../../container';
-import { ConfigSection, ConfigSubSection } from '../../lib/ipc/models/config';
+import { ConfigSection, ConfigSubSection, ConfigV3Section, ConfigV3SubSection } from '../../lib/ipc/models/config';
 import { StartWorkActionApi } from '../../lib/webview/controller/startwork/startWorkActionApi';
 import { Logger } from '../../logger';
 import { Branch, RefType } from '../../typings/git';
+import { Experiments } from '../../util/featureFlags';
+
+const startWorkPushBranchToRemote = 'startWorkPushBranchToRemote';
 
 export class VSCStartWorkActionApi implements StartWorkActionApi {
     getWorkspaceRepos(): WorkspaceRepo[] {
@@ -26,15 +29,23 @@ export class VSCStartWorkActionApi implements StartWorkActionApi {
         return repoDetails;
     }
 
-    async getRepoScmState(
-        wsRepo: WorkspaceRepo,
-    ): Promise<{ localBranches: Branch[]; remoteBranches: Branch[]; hasSubmodules: boolean }> {
+    async getRepoScmState(wsRepo: WorkspaceRepo): Promise<{
+        userName: string;
+        userEmail: string;
+        localBranches: Branch[];
+        remoteBranches: Branch[];
+        hasSubmodules: boolean;
+        currentBranch: string | undefined;
+    }> {
         const scm = Container.bitbucketContext.getRepositoryScm(wsRepo.rootUri)!;
 
         return {
+            userName: (await scm.getConfig('user.name')) || (await scm.getGlobalConfig('user.name')),
+            userEmail: (await scm.getConfig('user.email')) || (await scm.getGlobalConfig('user.email')),
             localBranches: await scm.getBranches({ remote: false }),
             remoteBranches: await scm.getBranches({ remote: true }),
             hasSubmodules: scm.state.submodules.length > 0,
+            currentBranch: scm.state.HEAD?.name,
         };
     }
 
@@ -58,17 +69,27 @@ export class VSCStartWorkActionApi implements StartWorkActionApi {
         // checkout if a branch exists already
         try {
             await scm.fetch(remote, sourceBranch.name);
+        } catch {
+            // Continue anyway as the branch might exist locally
+            Logger.debug(`Fetch failed for ${remote}/${sourceBranch.name}`);
+        }
+
+        try {
             await scm.getBranch(destinationBranch);
             await scm.checkout(destinationBranch);
             return;
-        } catch {}
+        } catch {
+            Logger.debug(`Local branch ${destinationBranch} not found`);
+        }
 
         // checkout if there's a matching remote branch (checkout will track remote branch automatically)
         try {
             await scm.getBranch(`remotes/${remote}/${destinationBranch}`);
             await scm.checkout(destinationBranch);
             return;
-        } catch {}
+        } catch {
+            Logger.debug(`Remote branch ${remote}/${destinationBranch} not found`);
+        }
 
         // no existing branches, create a new one
         await scm.createBranch(
@@ -89,13 +110,50 @@ export class VSCStartWorkActionApi implements StartWorkActionApi {
         };
     }
 
-    openSettings(section?: ConfigSection, subsection?: ConfigSubSection): void {
-        Container.settingsWebviewFactory.createOrShow(
-            section ? { section: section, subSection: subsection } : undefined,
-        );
+    openSettings(section?: ConfigSection | ConfigV3Section, subsection?: ConfigSubSection | ConfigV3SubSection): void {
+        if (section) {
+            if (Container.featureFlagClient.checkExperimentValue(Experiments.AtlascodeNewSettingsExperiment)) {
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigV3Section.AdvancedConfig,
+                    subSection: ConfigV3SubSection.StartWork,
+                });
+            } else {
+                Container.settingsWebviewFactory.createOrShow({
+                    section: ConfigSection.Jira,
+                    subSection: ConfigSubSection.StartWork,
+                });
+            }
+        } else {
+            Container.settingsWebviewFactory.createOrShow(undefined);
+        }
     }
 
     closePage() {
         Container.startWorkWebviewFactory.hide();
+    }
+
+    async getRovoDevPreference(): Promise<boolean> {
+        return Container.context.globalState.get<boolean>('startWorkWithRovoDev', false);
+    }
+
+    async updateRovoDevPreference(enabled: boolean): Promise<void> {
+        await Container.context.globalState.update('startWorkWithRovoDev', enabled);
+    }
+
+    async getPushBranchPreference(): Promise<boolean> {
+        return Container.context.globalState.get<boolean>(startWorkPushBranchToRemote, true);
+    }
+
+    async updatePushBranchPreference(enabled: boolean): Promise<void> {
+        await Container.context.globalState.update(startWorkPushBranchToRemote, enabled);
+    }
+
+    async openRovoDev(issue: MinimalIssue<DetailedSiteInfo>): Promise<void> {
+        const issueUrl = `${issue.siteDetails.baseLinkUrl}/browse/${issue.key}`;
+        await Container.rovodevWebviewProvider.setPromptTextWithFocus('Work on the attached Jira work item', {
+            contextType: 'jiraWorkItem',
+            name: issue.key,
+            url: issueUrl,
+        });
     }
 }

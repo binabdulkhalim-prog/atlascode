@@ -1,8 +1,14 @@
-import { defaultActionGuard } from '@atlassianlabs/guipi-core-controller';
+import { defaultActionGuard } from 'src/ipc/messaging';
+import { ConfigSection, ConfigSubSection, ConfigV3Section, ConfigV3SubSection } from 'src/lib/ipc/models/config';
+import { Logger } from 'src/logger';
+import * as vscode from 'vscode';
 
 import { ProductBitbucket } from '../../../../atlclients/authInfo';
 import { BitbucketBranchingModel } from '../../../../bitbucket/model';
+import { Commands } from '../../../../constants';
 import { Container } from '../../../../container';
+import { Experiments } from '../../../../util/featureFlags';
+import { OnJiraEditedRefreshDelay } from '../../../../util/time';
 import { AnalyticsApi } from '../../../analyticsApi';
 import { CommonActionType } from '../../../ipc/fromUI/common';
 import { StartWorkAction, StartWorkActionType } from '../../../ipc/fromUI/startWork';
@@ -18,13 +24,10 @@ import {
     StartWorkMessageType,
     StartWorkResponse,
 } from '../../../ipc/toUI/startWork';
-import { Logger } from '../../../logger';
 import { formatError } from '../../formatError';
 import { CommonActionMessageHandler } from '../common/commonActionMessageHandler';
 import { MessagePoster, WebviewController } from '../webviewController';
 import { StartWorkActionApi } from './startWorkActionApi';
-
-const customBranchType: BranchType = { kind: 'Custom', prefix: '' };
 
 export class StartWorkWebviewController implements WebviewController<StartWorkIssueMessage> {
     public readonly requiredFeatureFlags = [];
@@ -81,7 +84,6 @@ export class StartWorkWebviewController implements WebviewController<StartWorkIs
                                     return a.kind.localeCompare(b.kind);
                                 },
                             ),
-                            customBranchType,
                         ];
                         const developmentBranch = repoDetails.developmentBranch;
                         const href = repoDetails.url;
@@ -95,9 +97,12 @@ export class StartWorkWebviewController implements WebviewController<StartWorkIs
                             branchTypes: branchTypes,
                             developmentBranch: developmentBranch,
                             isCloud: isCloud,
+                            userName: repoScmState.userName,
+                            userEmail: repoScmState.userEmail,
                             localBranches: repoScmState.localBranches,
                             remoteBranches: repoScmState.remoteBranches,
                             hasSubmodules: repoScmState.hasSubmodules,
+                            currentBranch: repoScmState.currentBranch,
                         };
                     }),
             );
@@ -108,8 +113,9 @@ export class StartWorkWebviewController implements WebviewController<StartWorkIs
             this.postMessage({
                 type: StartWorkMessageType.Init,
                 ...this.initData!,
-                repoData: repoData,
+                repoData,
                 ...this.api.getStartWorkConfig(),
+                isRovoDevEnabled: Container.isRovoDevActive,
             });
         } catch (e) {
             this.logger.error(e, 'Error updating start work page');
@@ -154,6 +160,7 @@ export class StartWorkWebviewController implements WebviewController<StartWorkIs
                         type: CommonMessageType.Error,
                         reason: formatError(e, 'Error executing start work action'),
                     });
+                    this.analytics.fireIssueStartWorkErrorEvent(e.message, e?.stack);
                 }
                 break;
             }
@@ -162,7 +169,12 @@ export class StartWorkWebviewController implements WebviewController<StartWorkIs
                 break;
             }
             case StartWorkActionType.OpenSettings: {
-                this.api.openSettings(msg.section, msg.subsection);
+                if (Container.featureFlagClient.checkExperimentValue(Experiments.AtlascodeNewSettingsExperiment)) {
+                    this.api.openSettings(ConfigV3Section.AdvancedConfig, ConfigV3SubSection.StartWork);
+                } else {
+                    this.api.openSettings(ConfigSection.Jira, ConfigSubSection.StartWork);
+                }
+
                 break;
             }
             case StartWorkActionType.GetImage: {
@@ -206,6 +218,83 @@ export class StartWorkWebviewController implements WebviewController<StartWorkIs
                         nonce: msg.nonce,
                     } as any);
                 }
+                break;
+            }
+            case StartWorkActionType.GetRovoDevPreference: {
+                try {
+                    const enabled = await this.api.getRovoDevPreference();
+                    this.postMessage({
+                        type: StartWorkMessageType.RovoDevPreferenceResponse,
+                        enabled,
+                    });
+                } catch (e) {
+                    this.logger.error(e, 'Error getting RovoDev preference');
+                    this.postMessage({
+                        type: CommonMessageType.Error,
+                        reason: formatError(e, 'Error getting RovoDev preference'),
+                    });
+                }
+                break;
+            }
+            case StartWorkActionType.UpdateRovoDevPreference: {
+                try {
+                    await this.api.updateRovoDevPreference(msg.enabled);
+                } catch (e) {
+                    this.logger.error(e, 'Error updating RovoDev preference');
+                    this.postMessage({
+                        type: CommonMessageType.Error,
+                        reason: formatError(e, 'Error updating RovoDev preference'),
+                    });
+                }
+                break;
+            }
+            case StartWorkActionType.OpenRovoDev: {
+                try {
+                    await this.api.openRovoDev(this.initData.issue);
+                } catch (e) {
+                    this.logger.error(e, 'Error opening RovoDev');
+                    this.postMessage({
+                        type: CommonMessageType.Error,
+                        reason: formatError(e, 'Error opening RovoDev'),
+                    });
+                }
+                break;
+            }
+            case StartWorkActionType.GetPushBranchPreference: {
+                try {
+                    const enabled = await this.api.getPushBranchPreference();
+                    this.postMessage({
+                        type: StartWorkMessageType.PushBranchPreferenceResponse,
+                        enabled,
+                    });
+                } catch (e) {
+                    this.logger.error(e, 'Error getting push branch preference');
+                    this.postMessage({
+                        type: CommonMessageType.Error,
+                        reason: formatError(e, 'Error getting push branch preference'),
+                    });
+                }
+                break;
+            }
+            case StartWorkActionType.UpdatePushBranchPreference: {
+                try {
+                    await this.api.updatePushBranchPreference(msg.enabled);
+                } catch (e) {
+                    this.logger.error(e, 'Error updating push branch preference');
+                    this.postMessage({
+                        type: CommonMessageType.Error,
+                        reason: formatError(e, 'Error updating push branch preference'),
+                    });
+                }
+                break;
+            }
+            case StartWorkActionType.RefreshTreeViews: {
+                // Pass delay to allow Jira's indexes to update before refreshing
+                await vscode.commands.executeCommand(
+                    Commands.RefreshAssignedWorkItemsExplorer,
+                    OnJiraEditedRefreshDelay,
+                );
+                await vscode.commands.executeCommand(Commands.RefreshCustomJqlExplorer, OnJiraEditedRefreshDelay);
                 break;
             }
             case CommonActionType.Refresh: {

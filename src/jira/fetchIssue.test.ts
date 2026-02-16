@@ -1,4 +1,5 @@
 import { createIssueUI, editIssueUI } from '@atlassianlabs/jira-metaui-client';
+import { DEFAULT_API_VERSION } from '@atlassianlabs/jira-pi-client';
 import * as jiraPiCommonModels from '@atlassianlabs/jira-pi-common-models';
 import { MinimalIssue } from '@atlassianlabs/jira-pi-common-models';
 import { expansionCastTo } from 'testsutil';
@@ -43,6 +44,9 @@ describe('fetchIssue', () => {
     const mockFieldIds = ['field1', 'field2'];
     const mockEpicInfo = { epicNameField: 'customfield_10001', epicLinkField: 'customfield_10002' };
     const mockIssueResponse = { id: '123', key: mockIssueKey, fields: { summary: 'Test issue' } };
+    const mockFields = { field1: { id: 'field1', name: 'Field 1' }, field2: { id: 'field2', name: 'Field 2' } };
+    const mockIssueLinkTypes = [{ id: '1', name: 'Blocks' }];
+    const mockCreateMetadata = { projects: [{ key: mockProjectKey, issuetypes: [] }] };
 
     // Setup mocks before each test
     beforeEach(() => {
@@ -54,8 +58,11 @@ describe('fetchIssue', () => {
         };
 
         (Container.jiraSettingsManager as any) = {
-            getMinimalIssueFieldIdsForSite: jest.fn().mockResolvedValue(mockFieldIds),
+            getMinimalIssueFieldIdsForSite: jest.fn().mockReturnValue(mockFieldIds),
             getEpicFieldsForSite: jest.fn().mockResolvedValue(mockEpicInfo),
+            getAllFieldsForSite: jest.fn().mockResolvedValue(mockFields),
+            getIssueLinkTypes: jest.fn().mockResolvedValue(mockIssueLinkTypes),
+            getIssueCreateMetadata: jest.fn().mockResolvedValue(mockCreateMetadata),
         };
 
         // Setup SearchJiraHelper mock
@@ -92,7 +99,17 @@ describe('fetchIssue', () => {
             const result = await fetchCreateIssueUI(mockSiteDetails, mockProjectKey);
 
             expect(Container.clientManager.jiraClient).toHaveBeenCalledWith(mockSiteDetails);
-            expect(createIssueUI).toHaveBeenCalledWith(mockProjectKey, mockClient);
+            expect(Container.jiraSettingsManager.getAllFieldsForSite).toHaveBeenCalledWith(mockSiteDetails);
+            expect(Container.jiraSettingsManager.getIssueLinkTypes).toHaveBeenCalledWith(mockSiteDetails);
+            expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledWith(
+                mockProjectKey,
+                mockSiteDetails,
+            );
+            expect(createIssueUI).toHaveBeenCalledWith(mockProjectKey, mockClient, DEFAULT_API_VERSION, {
+                fields: mockFields,
+                issueLinkTypes: mockIssueLinkTypes,
+                issueCreateMetadata: mockCreateMetadata,
+            });
             expect(result).toEqual({
                 fields: [],
                 issuetypes: [],
@@ -118,12 +135,12 @@ describe('fetchIssue', () => {
     });
 
     describe('fetchMinimalIssue', () => {
-        it('should fetch issue data and transform to minimal issue', async () => {
+        it('should fetch issue data', async () => {
             const result = await fetchMinimalIssue(mockIssueKey, mockSiteDetails);
 
-            expect(Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite).toHaveBeenCalledWith(mockSiteDetails);
             expect(Container.clientManager.jiraClient).toHaveBeenCalledWith(mockSiteDetails);
             expect(Container.jiraSettingsManager.getEpicFieldsForSite).toHaveBeenCalledWith(mockSiteDetails);
+            expect(Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite).toHaveBeenCalledWith(mockEpicInfo);
             expect(mockClient.getIssue).toHaveBeenCalledWith(mockIssueKey, mockFieldIds);
             expect(jiraPiCommonModels.minimalIssueFromJsonObject).toHaveBeenCalledWith(
                 mockIssueResponse,
@@ -152,8 +169,9 @@ describe('fetchIssue', () => {
             const result = await getCachedOrFetchMinimalIssue(mockIssueKey, mockSiteDetails);
 
             expect(SearchJiraHelper.findIssue).toHaveBeenCalledWith(mockIssueKey);
-            expect(Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite).toHaveBeenCalledWith(mockSiteDetails);
             expect(Container.clientManager.jiraClient).toHaveBeenCalledWith(mockSiteDetails);
+            expect(Container.jiraSettingsManager.getEpicFieldsForSite).toHaveBeenCalledWith(mockSiteDetails);
+            expect(Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite).toHaveBeenCalledWith(mockEpicInfo);
             expect(mockClient.getIssue).toHaveBeenCalledWith(mockIssueKey, mockFieldIds);
             expect(result).toBe(mockMinimalIssue);
         });
@@ -166,8 +184,9 @@ describe('fetchIssue', () => {
 
             expect(SearchJiraHelper.findIssue).toHaveBeenCalledWith(mockIssueKey);
             expect(jiraPiCommonModels.isMinimalIssue).toHaveBeenCalledWith(mockMinimalIssue);
-            expect(Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite).toHaveBeenCalledWith(mockSiteDetails);
             expect(Container.clientManager.jiraClient).toHaveBeenCalledWith(mockSiteDetails);
+            expect(Container.jiraSettingsManager.getEpicFieldsForSite).toHaveBeenCalledWith(mockSiteDetails);
+            expect(Container.jiraSettingsManager.getMinimalIssueFieldIdsForSite).toHaveBeenCalledWith(mockEpicInfo);
             expect(mockClient.getIssue).toHaveBeenCalledWith(mockIssueKey, mockFieldIds);
             expect(result).toBe(mockMinimalIssue);
         });
@@ -178,8 +197,59 @@ describe('fetchIssue', () => {
             const result = await fetchEditIssueUI(mockMinimalIssue);
 
             expect(Container.clientManager.jiraClient).toHaveBeenCalledWith(mockMinimalIssue.siteDetails);
-            expect(editIssueUI).toHaveBeenCalledWith(mockMinimalIssue, mockClient);
+            expect(Container.jiraSettingsManager.getAllFieldsForSite).toHaveBeenCalledWith(
+                mockMinimalIssue.siteDetails,
+            );
+            expect(Container.jiraSettingsManager.getIssueLinkTypes).toHaveBeenCalledWith(mockMinimalIssue.siteDetails);
+            expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledWith(
+                mockProjectKey,
+                mockMinimalIssue.siteDetails,
+            );
+            expect(editIssueUI).toHaveBeenCalledWith(mockMinimalIssue, mockClient, DEFAULT_API_VERSION, {
+                fields: mockFields,
+                issueLinkTypes: mockIssueLinkTypes,
+                issueCreateMetadata: mockCreateMetadata,
+            });
             expect(result).toEqual({ fields: [] });
+        });
+
+        it('should extract project key correctly from issue key', async () => {
+            const issueWithComplexKey = expansionCastTo<MinimalIssue<DetailedSiteInfo>>({
+                key: 'COMPLEX_PROJECT-999',
+                summary: 'Test issue with complex project key',
+                siteDetails: mockSiteDetails,
+            });
+
+            const result = await fetchEditIssueUI(issueWithComplexKey);
+
+            expect(Container.jiraSettingsManager.getIssueCreateMetadata).toHaveBeenCalledWith(
+                'COMPLEX_PROJECT',
+                issueWithComplexKey.siteDetails,
+            );
+            expect(result).toEqual({ fields: [] });
+        });
+    });
+
+    describe('error handling', () => {
+        it('should propagate errors from fetchMinimalIssue', async () => {
+            const errorMessage = 'Failed to fetch issue';
+            mockClient.getIssue.mockRejectedValue(new Error(errorMessage));
+
+            await expect(fetchMinimalIssue(mockIssueKey, mockSiteDetails)).rejects.toThrow(errorMessage);
+        });
+
+        it('should propagate errors from fetchCreateIssueUI', async () => {
+            const errorMessage = 'Failed to create issue UI';
+            (createIssueUI as jest.Mock).mockRejectedValue(new Error(errorMessage));
+
+            await expect(fetchCreateIssueUI(mockSiteDetails, mockProjectKey)).rejects.toThrow(errorMessage);
+        });
+
+        it('should propagate errors from fetchEditIssueUI', async () => {
+            const errorMessage = 'Failed to edit issue UI';
+            (editIssueUI as jest.Mock).mockRejectedValue(new Error(errorMessage));
+
+            await expect(fetchEditIssueUI(mockMinimalIssue)).rejects.toThrow(errorMessage);
         });
     });
 });

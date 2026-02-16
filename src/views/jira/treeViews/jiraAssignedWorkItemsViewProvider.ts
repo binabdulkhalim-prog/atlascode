@@ -1,15 +1,23 @@
+import timer from 'src/util/perf';
 import {
+    CancellationToken,
     commands,
     ConfigurationChangeEvent,
+    DataTransfer,
+    DataTransferItem,
     Disposable,
     EventEmitter,
+    ThemeIcon,
     TreeDataProvider,
+    TreeDragAndDropController,
     TreeItem,
+    TreeItemCollapsibleState,
     TreeViewVisibilityChangeEvent,
     window,
 } from 'vscode';
 
 import { viewScreenEvent } from '../../../analytics';
+import { performanceEvent } from '../../../analytics';
 import { ProductJira } from '../../../atlclients/authInfo';
 import { CommandContext, setCommandContext } from '../../../commandContext';
 import { configuration } from '../../../config/configuration';
@@ -24,8 +32,31 @@ import { SearchJiraHelper } from '../searchJiraHelper';
 import { executeJqlQuery, JiraIssueNode, loginToJiraMessageNode, TreeViewIssue } from './utils';
 
 const AssignedWorkItemsViewProviderId = AssignedJiraItemsViewId;
+const RefreshCumulativeJqlFetchEventName = 'ui.jira.jqlFetch.update.lcp';
+const InitialCumulativeJqlFetchEventName = 'ui.jira.jqlFetch.render.lcp';
 
-export class AssignedWorkItemsViewProvider extends Disposable implements TreeDataProvider<TreeItem> {
+class AssigneeGroupNode extends TreeItem {
+    private readonly _children: JiraIssueNode[];
+
+    constructor(assigneeName: string, issueCount: number, issues: TreeViewIssue[]) {
+        super(`${assigneeName} (${issueCount})`, TreeItemCollapsibleState.Expanded);
+        this.iconPath = ThemeIcon.Folder;
+        this.tooltip = `${assigneeName} - ${issueCount} issue${issueCount !== 1 ? 's' : ''}`;
+        this._children = issues.map((issue) => new JiraIssueNode(JiraIssueNode.NodeType.JiraAssignedIssuesNode, issue));
+    }
+
+    getChildren(): TreeItem[] {
+        return this._children;
+    }
+}
+
+export class AssignedWorkItemsViewProvider
+    extends Disposable
+    implements TreeDataProvider<TreeItem>, TreeDragAndDropController<TreeItem>
+{
+    dropMimeTypes = [];
+    dragMimeTypes = [];
+
     private static readonly _treeItemConfigureJiraMessage = loginToJiraMessageNode;
 
     private _onDidChangeTreeData = new EventEmitter<TreeItem | undefined | void>();
@@ -37,13 +68,19 @@ export class AssignedWorkItemsViewProvider extends Disposable implements TreeDat
     private readonly _jiraNotifier = new JiraNotifier();
 
     private _skipNotificationForNextFetch = false;
+    private _filteredIssues: TreeViewIssue[] | null = null;
+    private _filteredIssuesResolve: ((value: TreeItem[]) => void) | null = null;
+    private _selectedUsersCount = 0;
 
     constructor() {
         super(() => this.dispose());
 
         setCommandContext(CommandContext.AssignedIssueExplorer, Container.config.jira.explorer.enabled);
 
-        const treeView = window.createTreeView(AssignedWorkItemsViewProviderId, { treeDataProvider: this });
+        const treeView = window.createTreeView(AssignedWorkItemsViewProviderId, {
+            treeDataProvider: this,
+            dragAndDropController: this,
+        });
 
         BadgeDelegate.initialize(treeView);
 
@@ -57,7 +94,15 @@ export class AssignedWorkItemsViewProvider extends Disposable implements TreeDat
 
         const jqlEntries = Container.jqlManager.getAllDefaultJQLEntries();
         if (jqlEntries.length) {
-            this._initPromises = new PromiseRacer(jqlEntries.map(executeJqlQuery));
+            timer.mark(InitialCumulativeJqlFetchEventName);
+            const promises = jqlEntries.map(executeJqlQuery);
+            this._initPromises = new PromiseRacer(promises);
+            Promise.all(promises).then(() => {
+                const jqlInitialDuration = timer.measureAndClear(InitialCumulativeJqlFetchEventName);
+                performanceEvent(InitialCumulativeJqlFetchEventName, jqlInitialDuration).then((event) => {
+                    Container.analyticsClient.sendTrackEvent(event);
+                });
+            });
         }
 
         Container.context.subscriptions.push(configuration.onDidChange(this.onConfigurationChanged, this));
@@ -91,7 +136,38 @@ export class AssignedWorkItemsViewProvider extends Disposable implements TreeDat
         commands.executeCommand(`${AssignedWorkItemsViewProviderId}.focus`, {});
     }
 
-    public dispose(): void {
+    public setFilteredIssues(issues: TreeViewIssue[] | null, selectedUsersCount?: number): void {
+        this._filteredIssues = issues;
+        if (selectedUsersCount !== undefined) {
+            this._selectedUsersCount = selectedUsersCount;
+        }
+
+        if (this._filteredIssuesResolve) {
+            if (issues && issues.length > 0) {
+                SearchJiraHelper.setIssues(issues, AssignedWorkItemsViewProviderId);
+                this._filteredIssuesResolve(this.buildTreeItemsFromIssues(issues));
+            } else {
+                this._filteredIssuesResolve([]);
+            }
+            this._filteredIssuesResolve = null;
+        }
+
+        this._onDidChangeTreeData.fire();
+    }
+
+    public hasActiveAssigneeFilter(): boolean {
+        return this._selectedUsersCount > 0;
+    }
+
+    public hasActiveProjectFilter(): boolean {
+        if (this._filteredIssues === null || this._filteredIssues.length === 0) {
+            return false;
+        }
+
+        return this._filteredIssues.some((issue) => issue.source?.id === 'filtered-project');
+    }
+
+    public override dispose(): void {
         this._disposable.dispose();
     }
 
@@ -100,8 +176,13 @@ export class AssignedWorkItemsViewProvider extends Disposable implements TreeDat
         this.refresh();
     }
 
-    private refresh(): void {
-        this._onDidChangeTreeData.fire();
+    private refresh(delay?: number): Promise<void> {
+        return new Promise<void>((resolve) =>
+            setTimeout(() => {
+                this._onDidChangeTreeData.fire();
+                resolve();
+            }, delay || 1),
+        );
     }
 
     public getTreeItem(element: TreeItem): TreeItem {
@@ -109,9 +190,31 @@ export class AssignedWorkItemsViewProvider extends Disposable implements TreeDat
     }
 
     public async getChildren(element?: TreeItem): Promise<TreeItem[]> {
-        // this branch should never be triggered
+        // Show viewsWelcome with login button if user is not authenticated
+        if (!Container.siteManager.productHasAtLeastOneSite(ProductJira)) {
+            return [];
+        }
+
+        if (element instanceof AssigneeGroupNode) {
+            return element.getChildren();
+        }
+
         if (element) {
             return [];
+        } else if (this._filteredIssues !== null) {
+            if (this._filteredIssues.length === 0) {
+                return new Promise<TreeItem[]>((resolve) => {
+                    const existingResolve = this._filteredIssuesResolve;
+                    this._filteredIssuesResolve = (items) => {
+                        if (existingResolve) {
+                            existingResolve(items);
+                        }
+                        resolve(items);
+                    };
+                });
+            }
+            SearchJiraHelper.setIssues(this._filteredIssues, AssignedWorkItemsViewProviderId);
+            return this.buildTreeItemsFromIssues(this._filteredIssues);
         }
         // this branch triggers during initialization, aka first fetch of all default JQLs
         else if (this._initPromises && !this._initPromises.isEmpty()) {
@@ -123,7 +226,6 @@ export class AssignedWorkItemsViewProvider extends Disposable implements TreeDat
             // - append the data to `this._children` and resolve this promise returning it
             // - if there are still JQL promises in PromiseRacer, trigger another DidChangeTreeData immediately
             //   which will stay pending until the next JQL promise with data resolves, or until all JQL promises are done
-
             while (!this._initPromises.isEmpty()) {
                 const issues = await this._initPromises.next();
                 if (!issues.length) {
@@ -143,14 +245,16 @@ export class AssignedWorkItemsViewProvider extends Disposable implements TreeDat
             }
 
             return this._initChildren;
-        }
-        // this branch triggers when refresing an already rendered panel
-        else {
+        } else {
+            if (this._filteredIssues !== null) {
+                this._filteredIssues = null;
+            }
+
+            timer.mark(RefreshCumulativeJqlFetchEventName);
             const jqlEntries = Container.jqlManager.getAllDefaultJQLEntries();
             if (!jqlEntries.length) {
                 return [AssignedWorkItemsViewProvider._treeItemConfigureJiraMessage];
             }
-
             const allIssues = (await Promise.all(jqlEntries.map(executeJqlQuery))).flat();
 
             if (this._skipNotificationForNextFetch) {
@@ -161,14 +265,73 @@ export class AssignedWorkItemsViewProvider extends Disposable implements TreeDat
             }
 
             SearchJiraHelper.setIssues(allIssues, AssignedWorkItemsViewProviderId);
+            const jqlRefreshDuration = timer.measureAndClear(RefreshCumulativeJqlFetchEventName);
+            performanceEvent(RefreshCumulativeJqlFetchEventName, jqlRefreshDuration).then((event) => {
+                Container.analyticsClient.sendTrackEvent(event);
+            });
 
             return this.buildTreeItemsFromIssues(allIssues);
         }
     }
 
     private buildTreeItemsFromIssues(issues?: TreeViewIssue[]): TreeItem[] {
-        return issues
-            ? issues.map((issue) => new JiraIssueNode(JiraIssueNode.NodeType.JiraAssignedIssuesNode, issue))
-            : [];
+        if (!issues || issues.length === 0) {
+            return [];
+        }
+
+        const uniqueAssignees = new Set<string>();
+        for (const issue of issues) {
+            const assignee = (issue as any).assignee;
+            const assigneeKey = assignee?.accountId;
+            uniqueAssignees.add(assigneeKey);
+        }
+
+        return uniqueAssignees.size > 1
+            ? this.buildGroupedTreeItems(issues)
+            : issues.map((issue) => new JiraIssueNode(JiraIssueNode.NodeType.JiraAssignedIssuesNode, issue));
+    }
+
+    private buildGroupedTreeItems(issues: TreeViewIssue[]): TreeItem[] {
+        const issuesByAssignee = new Map<string, TreeViewIssue[]>();
+
+        for (const issue of issues) {
+            const assignee = (issue as any).assignee;
+            const assigneeKey = assignee?.accountId || 'unassigned';
+
+            if (!issuesByAssignee.has(assigneeKey)) {
+                issuesByAssignee.set(assigneeKey, []);
+            }
+            issuesByAssignee.get(assigneeKey)!.push(issue);
+        }
+
+        const groupNodes: TreeItem[] = [];
+        for (const [, assigneeIssues] of issuesByAssignee.entries()) {
+            const assignee = assigneeIssues[0] ? (assigneeIssues[0] as any).assignee : null;
+            const assigneeName = assignee?.displayName || assignee?.name || 'No assignee';
+
+            const groupNode = new AssigneeGroupNode(assigneeName, assigneeIssues.length, assigneeIssues);
+            groupNodes.push(groupNode);
+        }
+
+        groupNodes.sort((a, b) => {
+            const aLabel = a.label?.toString() || '';
+            const bLabel = b.label?.toString() || '';
+            if (aLabel === 'No assignee') {
+                return 1;
+            }
+            if (bLabel === 'No assignee') {
+                return -1;
+            }
+            return aLabel.localeCompare(bLabel);
+        });
+
+        return groupNodes;
+    }
+
+    public async handleDrag(source: readonly TreeItem[], treeDataTransfer: DataTransfer, _token: CancellationToken) {
+        treeDataTransfer.set(
+            'application/vnd.code.tree.jiraAssignedWorkItem',
+            new DataTransferItem(source.map((x) => x.resourceUri)),
+        );
     }
 }

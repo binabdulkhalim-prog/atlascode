@@ -48,7 +48,7 @@ export default class PopoutMentionPicker extends React.Component<
         this.props.onUserMentioned(value);
     };
 
-    render() {
+    override render() {
         const { isOpen } = this.state;
         return (
             <Dropdown
@@ -70,7 +70,8 @@ export default class PopoutMentionPicker extends React.Component<
                     components={{ Option: UserOption, DropdownIndicator, IndicatorSeparator: null }}
                     menuIsOpen
                     onChange={this.onSelectChange}
-                    loadOptions={this.props.loadUserOptions}
+                    loadOptions={(inputValue: string) => this.props.loadUserOptions(inputValue)}
+                    defaultOptions
                     placeholder="Search..."
                     tabSelectsValue={false}
                     controlShouldRenderValue={false}

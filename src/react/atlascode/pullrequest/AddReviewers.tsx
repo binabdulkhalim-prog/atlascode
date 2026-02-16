@@ -1,6 +1,7 @@
-import { Avatar, Grid, makeStyles, TextField, Typography } from '@material-ui/core';
-import AddIcon from '@material-ui/icons/Add';
-import { Autocomplete } from '@material-ui/lab';
+import AddIcon from '@mui/icons-material/Add';
+import { Avatar, Grid, TextField, Typography } from '@mui/material';
+import Autocomplete from '@mui/material/Autocomplete';
+import { makeStyles } from '@mui/styles';
 import AwesomeDebouncePromise from 'awesome-debounce-promise';
 import React, { useCallback, useContext, useState } from 'react';
 import { useAsyncAbortable } from 'react-async-hook';
@@ -116,8 +117,15 @@ export const AddReviewers: React.FunctionComponent<AddReviewersProps> = ({ site,
     const fetchUsers = useAsyncAbortable(
         async (abortSignal) => {
             if (inputText.length > 1 && site) {
-                const results = await debouncedUserFetcher(site, inputText, abortSignal);
-                return results.filter((user) => !reviewers.some((existing) => existing.accountId === user.accountId));
+                try {
+                    const results = await debouncedUserFetcher(site, inputText, abortSignal);
+                    return (results || []).filter(
+                        (user) => !reviewers.some((existing) => existing.accountId === user.accountId),
+                    );
+                } catch {
+                    // Return empty array on error so user can see "No options" instead of crash
+                    return [];
+                }
             }
             return [];
         },
@@ -129,6 +137,7 @@ export const AddReviewers: React.FunctionComponent<AddReviewersProps> = ({ site,
             if (user) {
                 const updatedReviewers = [...reviewers, user];
                 await updateReviewers(updatedReviewers);
+                setInputText(''); // Clear input after selection
             }
         },
         [reviewers, updateReviewers],
@@ -142,9 +151,21 @@ export const AddReviewers: React.FunctionComponent<AddReviewersProps> = ({ site,
                 size="small"
                 options={fetchUsers.result || []}
                 getOptionLabel={(option) => option?.displayName || ''}
+                isOptionEqualToValue={(option, value) => option?.accountId === value?.accountId}
+                value={null} // No selected value since we clear after selection
+                inputValue={inputText}
                 onInputChange={handleInputChange}
                 onChange={handleUserSelect}
                 loading={fetchUsers.loading}
+                noOptionsText={
+                    fetchUsers.loading
+                        ? 'Loading...'
+                        : !site
+                          ? 'No site available for search'
+                          : inputText.length > 1
+                            ? 'No users found in this workspace'
+                            : 'Type to search users'
+                }
                 renderInput={(params) => (
                     <TextField
                         {...params}
@@ -156,8 +177,8 @@ export const AddReviewers: React.FunctionComponent<AddReviewersProps> = ({ site,
                         }}
                     />
                 )}
-                renderOption={(option) => (
-                    <div className={classes.optionContainer}>
+                renderOption={(optionProps, option) => (
+                    <li {...optionProps} key={option?.accountId} className={classes.optionContainer}>
                         <Grid container alignItems="center">
                             <Grid item className={classes.avatarContainer}>
                                 <Avatar src={option?.avatarUrl} />
@@ -166,7 +187,7 @@ export const AddReviewers: React.FunctionComponent<AddReviewersProps> = ({ site,
                                 <Typography className={classes.optionText}>{option?.displayName}</Typography>
                             </Grid>
                         </Grid>
-                    </div>
+                    </li>
                 )}
             />
         </div>

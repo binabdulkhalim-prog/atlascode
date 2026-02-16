@@ -8,16 +8,47 @@ import {
     IssuePickerResult,
 } from '@atlassianlabs/jira-pi-common-models';
 import { ValueType } from '@atlassianlabs/jira-pi-meta-models';
+import { Features } from 'src/util/features';
 
 import { showIssue } from '../commands/jira/showIssue';
 import { Container } from '../container';
-import { FetchQueryAction, isCreateSelectOption, isFetchQueryAndSite, isOpenJiraIssue } from '../ipc/issueActions';
+import {
+    FetchQueryAction,
+    isCreateSelectOption,
+    isFetchQueryAndSite,
+    isHandleEditorFocus,
+    isMediaTokenFetchAction,
+    isOpenJiraIssue,
+} from '../ipc/issueActions';
 import { isAction } from '../ipc/messaging';
 import { Logger } from '../logger';
 import { AbstractReactWebview } from './abstractWebview';
 
 export abstract class AbstractIssueEditorWebview extends AbstractReactWebview {
     abstract handleSelectOptionCreated(fieldKey: string, newValue: any, nonce?: string): Promise<void>;
+
+    /**
+     * Called when auth state changes (login/logout).
+     * Checks if the current site is still authenticated and notifies the webview if not.
+     */
+    protected override onAuthChange(): void {
+        const currentSite = this.siteOrUndefined;
+        if (!currentSite || !currentSite.id) {
+            return;
+        }
+
+        const productSites = Container.siteManager.getSitesAvailable(currentSite.product);
+        const siteStillAuthenticated = productSites.some(
+            (site) => site.id === currentSite.id && site.userId === currentSite.userId,
+        );
+
+        if (!siteStillAuthenticated) {
+            this.postMessage({
+                type: 'loggedOut',
+                siteName: currentSite.name,
+            });
+        }
+    }
 
     protected formatSelectOptions(msg: FetchQueryAction, result: any, valueType?: ValueType): any[] {
         let suggestions: any[] = [];
@@ -37,7 +68,8 @@ export abstract class AbstractIssueEditorWebview extends AbstractReactWebview {
             });
         } else if (isAutocompleteSuggestionsResult(result)) {
             suggestions = result.results.map((result) => {
-                return { label: result.displayName, value: result.value };
+                const plainTextLabel = result.displayName.replace(/<b>|<\/b>/g, '');
+                return { label: plainTextLabel, value: result.value };
             });
         } else if (isProjectsResult(result)) {
             // Jira server's /project API does not filter/search, so manually filter results that match the query
@@ -62,7 +94,7 @@ export abstract class AbstractIssueEditorWebview extends AbstractReactWebview {
         return suggestions;
     }
 
-    protected async onMessageReceived(msg: any): Promise<boolean> {
+    protected override async onMessageReceived(msg: any): Promise<boolean> {
         let handled = await super.onMessageReceived(msg);
 
         if (!handled) {
@@ -73,8 +105,24 @@ export abstract class AbstractIssueEditorWebview extends AbstractReactWebview {
                         if (isFetchQueryAndSite(msg)) {
                             try {
                                 const client = await Container.clientManager.jiraClient(msg.site);
+                                const baseUrl = client.baseUrl.replace(/\/rest$/, '');
                                 let suggestions: IssuePickerIssue[] = [];
-                                if (msg.autocompleteUrl && msg.autocompleteUrl.trim() !== '') {
+                                if (
+                                    msg.query &&
+                                    msg.currentJQL &&
+                                    msg.currentJQL.trim() !== '' &&
+                                    msg.query.trim() !== ''
+                                ) {
+                                    const apiUrl = `${baseUrl}/rest/api/${client.apiVersion}/issue/picker?query=${encodeURIComponent(msg.query)}&currentJQL=${encodeURIComponent(msg.currentJQL)}`;
+                                    const res = await client.getAutocompleteDataFromUrl(apiUrl);
+                                    const result: IssuePickerResult = res as IssuePickerResult;
+                                    if (Array.isArray(result.sections)) {
+                                        suggestions = result.sections.reduce(
+                                            (prev, curr) => prev.concat(curr.issues),
+                                            [] as IssuePickerIssue[],
+                                        );
+                                    }
+                                } else if (msg.autocompleteUrl && msg.autocompleteUrl.trim() !== '') {
                                     const result: IssuePickerResult = await client.getAutocompleteDataFromUrl(
                                         msg.autocompleteUrl + encodeURIComponent(msg.query),
                                     );
@@ -88,9 +136,14 @@ export abstract class AbstractIssueEditorWebview extends AbstractReactWebview {
                                     suggestions = await client.getIssuePickerSuggestions(encodeURIComponent(msg.query));
                                 }
 
+                                const updatedSuggestions = suggestions.map((suggestion) => ({
+                                    ...suggestion,
+                                    img: baseUrl + suggestion.img,
+                                }));
+
                                 this.postMessage({
                                     type: 'issueSuggestionsList',
-                                    issues: suggestions,
+                                    issues: updatedSuggestions,
                                     nonce: msg.nonce,
                                 });
                             } catch (e) {
@@ -111,8 +164,9 @@ export abstract class AbstractIssueEditorWebview extends AbstractReactWebview {
                                 const client = await Container.clientManager.jiraClient(msg.site);
                                 let suggestions: any[] = [];
                                 if (msg.autocompleteUrl && msg.autocompleteUrl.trim() !== '') {
+                                    const finalUrl = this.transformAutocompleteUrl(msg.autocompleteUrl, msg.fieldName);
                                     const result = await client.getAutocompleteDataFromUrl(
-                                        msg.autocompleteUrl + encodeURIComponent(msg.query),
+                                        finalUrl + encodeURIComponent(msg.query),
                                     );
                                     suggestions = this.formatSelectOptions(msg, result);
                                 }
@@ -154,10 +208,73 @@ export abstract class AbstractIssueEditorWebview extends AbstractReactWebview {
                         }
                         break;
                     }
+                    case 'handleEditorFocus': {
+                        if (isHandleEditorFocus(msg)) {
+                            handled = true;
+                            Container.setIsEditorFocused(msg.isFocused);
+                        }
+                        break;
+                    }
+                    case 'fetchMediaToken': {
+                        if (isMediaTokenFetchAction(msg)) {
+                            const atlaskitEditorEnabled = Container.featureFlagClient.checkGate(
+                                Features.AtlaskitEditor,
+                            );
+
+                            if (!atlaskitEditorEnabled || !this.siteOrUndefined) {
+                                break;
+                            }
+
+                            const readTokenName = 'read:media-credentials:jira';
+                            const writeTokenName = 'write:media-credentials:jira';
+
+                            const checkScopesResult = await Container.credentialManager.checkScopes(
+                                this.siteOrUndefined,
+                                [readTokenName, writeTokenName],
+                            );
+
+                            if (!checkScopesResult) {
+                                Logger.error(
+                                    new Error('Failed to check scopes for media token fetch'),
+                                    'Error checking scopes for media token fetch',
+                                );
+                                break;
+                            }
+
+                            const mediaRead =
+                                readTokenName in checkScopesResult.checkedScopes
+                                    ? checkScopesResult.checkedScopes[readTokenName]
+                                    : false;
+                            const mediaWrite =
+                                writeTokenName in checkScopesResult.checkedScopes
+                                    ? checkScopesResult.checkedScopes[writeTokenName]
+                                    : false;
+                            const message = {
+                                type: 'scopeCheckResult',
+                                checkedScopes: {
+                                    mediaRead,
+                                    mediaWrite,
+                                },
+                                isApiToken: checkScopesResult.isApiToken,
+                            };
+                            this.postMessage(message);
+                            // Fetch and post message with media token here
+                        }
+                        break;
+                    }
                 }
             }
         }
 
         return handled;
+    }
+
+    private transformAutocompleteUrl(url: string, fieldName?: string): string {
+        if (fieldName === 'Team' && url.includes('/gateway/api/v1/recommendations')) {
+            const baseUrl = url.replace('/gateway/api/v1/recommendations', '');
+            return `${baseUrl}/rest/api/2/jql/autocompletedata/suggestions?fieldName=${fieldName}&fieldValue=`;
+        }
+
+        return url;
     }
 }

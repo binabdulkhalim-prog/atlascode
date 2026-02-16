@@ -4,7 +4,7 @@ import { AuthInfoEvent, isRemoveAuthEvent, Product, ProductBitbucket, ProductJir
 import { configuration } from '../../config/configuration';
 import { Container } from '../../container';
 import { Logger } from '../../logger';
-import { FeatureFlagClient, Features } from '../../util/featureFlags';
+import { Features } from '../../util/featureFlags';
 import { Time } from '../../util/time';
 import { AtlassianNotificationNotifier } from './atlassianNotificationNotifier';
 import { AuthNotifier } from './authNotifier';
@@ -72,6 +72,7 @@ const ENABLE_BANNER_FOR = [
     NotificationType.LoginNeeded,
     NotificationType.Other,
 ];
+
 export class NotificationManagerImpl extends Disposable {
     private notifications: Map<string, Map<string, AtlasCodeNotification>> = new Map();
     private static instance: NotificationManagerImpl;
@@ -82,6 +83,7 @@ export class NotificationManagerImpl extends Disposable {
     private _bitbucketEnabled: boolean;
     private _disposable: Disposable[] = [];
     private userReadNotifications: { id: string; timestamp: number }[] = [];
+    private bannerShownNotifications: { id: string; timestamp: number }[] = [];
 
     private constructor() {
         super(() => this.dispose());
@@ -91,6 +93,7 @@ export class NotificationManagerImpl extends Disposable {
         this._jiraEnabled = Container.config.jira.enabled;
         this._bitbucketEnabled = Container.config.bitbucket.enabled;
         this.userReadNotifications = NotificationDB.getReadNotifications();
+        this.bannerShownNotifications = NotificationDB.getBannerShownNotifications();
     }
 
     public onDidAuthChange(e: AuthInfoEvent): void {
@@ -100,7 +103,7 @@ export class NotificationManagerImpl extends Disposable {
         }
     }
 
-    public dispose() {
+    public override dispose() {
         this._disposable.forEach((e) => e.dispose());
     }
 
@@ -109,7 +112,7 @@ export class NotificationManagerImpl extends Disposable {
             NotificationManagerImpl.instance = new NotificationManagerImpl();
 
             NotificationManagerImpl.instance.notifiers.add(AuthNotifier.getInstance());
-            if (FeatureFlagClient.checkGate(Features.AtlassianNotifications)) {
+            if (Container.featureFlagClient.checkGate(Features.AtlassianNotifications)) {
                 NotificationManagerImpl.instance.notifiers.add(AtlassianNotificationNotifier.getInstance());
             }
 
@@ -187,6 +190,19 @@ export class NotificationManagerImpl extends Disposable {
         const removedNotifications = this.notifications.get(uri.toString()) || new Map();
         this.notifications.delete(uri.toString());
         this.onNotificationChange(NotificationAction.MarkedAsRead, removedNotifications);
+    }
+
+    public async markBannerShown(notificationId: string, timestamp: number): Promise<void> {
+        if (this.bannerShownNotifications.some((n) => n.id === notificationId)) {
+            return;
+        }
+        Logger.debug(`Marking banner shown for notification ${notificationId}`);
+        this.bannerShownNotifications.push({ id: notificationId, timestamp });
+        await NotificationDB.setBannerShownNotifications(this.bannerShownNotifications);
+    }
+
+    public hasBannerBeenShown(notificationId: string): boolean {
+        return this.bannerShownNotifications.some((n) => n.id === notificationId);
     }
 
     private clearNotificationsByProduct(product: Product): void {
@@ -271,7 +287,15 @@ export class NotificationManagerImpl extends Disposable {
     private getBannerNotifications(
         notifications: Map<string, AtlasCodeNotification>,
     ): Map<string, AtlasCodeNotification> {
-        return this.getFilteredNotifications(notifications, ENABLE_BANNER_FOR);
+        const filteredByType = this.getFilteredNotifications(notifications, ENABLE_BANNER_FOR);
+        // Also filter out notifications that have already had their banner shown
+        const filteredNotifications = new Map<string, AtlasCodeNotification>();
+        filteredByType.forEach((notification) => {
+            if (!this.hasBannerBeenShown(notification.id)) {
+                filteredNotifications.set(notification.id, notification);
+            }
+        });
+        return filteredNotifications;
     }
 
     private getFilteredNotifications(
@@ -349,6 +373,8 @@ export class NotificationManagerImpl extends Disposable {
 
 class NotificationDB {
     private static readonly USER_READ_NOTIFICATIONS_KEY = 'userReadNotifications';
+    private static readonly BANNER_SHOWN_NOTIFICATIONS_KEY = 'bannerShownNotifications';
+
     public static getReadNotifications(): { id: string; timestamp: number }[] {
         const inDB = Container.context.globalState.get<{ id: string; timestamp: number }[]>(
             NotificationDB.USER_READ_NOTIFICATIONS_KEY,
@@ -364,6 +390,23 @@ class NotificationDB {
 
     public static setReadNotifications(notifications: { id: string; timestamp: number }[]): void {
         Container.context.globalState.update(NotificationDB.USER_READ_NOTIFICATIONS_KEY, notifications);
+    }
+
+    public static getBannerShownNotifications(): { id: string; timestamp: number }[] {
+        const inDB = Container.context.globalState.get<{ id: string; timestamp: number }[]>(
+            NotificationDB.BANNER_SHOWN_NOTIFICATIONS_KEY,
+            [],
+        );
+
+        const results = inDB.filter((notification) => NotificationDB.isGoodTTL(notification));
+        if (results.length !== inDB.length) {
+            Container.context.globalState.update(NotificationDB.BANNER_SHOWN_NOTIFICATIONS_KEY, results);
+        }
+        return results;
+    }
+
+    public static setBannerShownNotifications(notifications: { id: string; timestamp: number }[]): Thenable<void> {
+        return Container.context.globalState.update(NotificationDB.BANNER_SHOWN_NOTIFICATIONS_KEY, notifications);
     }
 
     private static isGoodTTL(notification: { id: string; timestamp: number }): boolean {

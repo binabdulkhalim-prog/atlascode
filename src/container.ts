@@ -1,7 +1,10 @@
-import { env, ExtensionContext, UIKind, workspace } from 'vscode';
+import { v4 } from 'uuid';
+import { env, ExtensionContext, languages, UIKind } from 'vscode';
+import * as vscode from 'vscode';
 
 import { featureFlagClientInitializedEvent } from './analytics';
 import { AnalyticsClient, analyticsClient } from './analytics-node-client/src/client.min.js';
+import { Product } from './atlclients/authInfo';
 import { CredentialManager } from './atlclients/authStore';
 import { ClientManager } from './atlclients/clientManager';
 import { LoginManager } from './atlclients/loginManager';
@@ -10,6 +13,8 @@ import { BitbucketCheckoutHelper } from './bitbucket/checkoutHelper';
 import { CheckoutHelper } from './bitbucket/interfaces';
 import { PullRequest, WorkspaceRepo } from './bitbucket/model';
 import { BitbucketCloudPullRequestLinkProvider } from './bitbucket/terminal-link/createPrLinkProvider';
+import { CommandContext, setCommandContext } from './commandContext';
+import { registerDebugCommands } from './commands';
 import { openPullRequest } from './commands/bitbucket/pullRequest';
 import { configuration, IConfig } from './config/configuration';
 import { PmfStats } from './feedback/pmfStats';
@@ -18,24 +23,35 @@ import { JiraProjectManager } from './jira/projectManager';
 import { JiraSettingsManager } from './jira/settingsManager';
 import { CancellationManager } from './lib/cancellation';
 import { ConfigAction } from './lib/ipc/fromUI/config';
-import { OnboardingAction } from './lib/ipc/fromUI/onboarding';
 import { PipelineSummaryAction } from './lib/ipc/fromUI/pipelineSummary';
 import { PullRequestDetailsAction } from './lib/ipc/fromUI/pullRequestDetails';
 import { StartWorkAction } from './lib/ipc/fromUI/startWork';
 import { ConfigTarget } from './lib/ipc/models/config';
-import { SectionChangeMessage } from './lib/ipc/toUI/config';
+import { SectionChangeMessage, SectionV3ChangeMessage } from './lib/ipc/toUI/config';
 import { StartWorkIssueMessage } from './lib/ipc/toUI/startWork';
 import { CommonActionMessageHandler } from './lib/webview/controller/common/commonActionMessageHandler';
 import { Logger } from './logger';
 import OnboardingProvider from './onboarding/onboardingProvider';
+import { registerQuickAuthCommand } from './onboarding/quickFlow';
 import { Pipeline } from './pipelines/model';
+import { RovodevCommandContext } from './rovo-dev/api/componentApi';
+import { RovodevStaticConfig } from './rovo-dev/api/rovodevStaticConfig';
+import { RovoDevCodeActionProvider } from './rovo-dev/rovoDevCodeActionProvider';
+import { RovoDevLanguageServerProvider } from './rovo-dev/rovoDevLanguageServerProvider';
+import { RovoDevProcessManager } from './rovo-dev/rovoDevProcessManager';
+import { RovoDevWebviewProvider } from './rovo-dev/rovoDevWebviewProvider';
+import { RovoDevLogger } from './rovo-dev/util/rovoDevLogger';
+import { SentryConfig, SentryService } from './sentry';
 import { SiteManager } from './siteManager';
-import { AtlascodeUriHandler, ONBOARDING_URL, SETTINGS_URL } from './uriHandler';
+import { AtlascodeUriHandler, SETTINGS_URL } from './uriHandler';
 import { Experiments, FeatureFlagClient, FeatureFlagClientInitError, Features } from './util/featureFlags';
+import { isDebugging } from './util/isDebugging';
+import { RovoDevEntitlementChecker } from './util/rovo-dev-entitlement/rovoDevEntitlementChecker';
 import { AuthStatusBar } from './views/authStatusBar';
 import { HelpExplorer } from './views/HelpExplorer';
 import { JiraActiveIssueStatusBar } from './views/jira/activeIssueStatusBar';
 import { IssueHoverProviderManager } from './views/jira/issueHoverProviderManager';
+import { SearchAllJiraHelper } from './views/jira/searchAllJiraHelper';
 import { SearchJiraHelper } from './views/jira/searchJiraHelper';
 import { CustomJQLViewProvider } from './views/jira/treeViews/customJqlViewProvider';
 import { AssignedWorkItemsViewProvider } from './views/jira/treeViews/jiraAssignedWorkItemsViewProvider';
@@ -43,11 +59,10 @@ import { PipelinesExplorer } from './views/pipelines/PipelinesExplorer';
 import { VSCAnalyticsApi } from './vscAnalyticsApi';
 import { VSCCommonMessageHandler } from './webview/common/vscCommonMessageActionHandler';
 import { VSCConfigActionApi } from './webview/config/vscConfigActionApi';
+import { VSCConfigV3WebviewControllerFactory } from './webview/config/vscConfigV3WebviewControllerFactory';
 import { VSCConfigWebviewControllerFactory } from './webview/config/vscConfigWebviewControllerFactory';
 import { ExplorerFocusManager } from './webview/ExplorerFocusManager';
 import { MultiWebview } from './webview/multiViewFactory';
-import { VSCOnboardingActionApi } from './webview/onboarding/vscOnboardingActionApi';
-import { VSCOnboardingWebviewControllerFactory } from './webview/onboarding/vscOnboardingWebviewControllerFactory';
 import { PipelineSummaryActionImplementation } from './webview/pipelines/pipelineSummaryActionImplementation';
 import { PipelineSummaryWebviewControllerFactory } from './webview/pipelines/pipelineSummaryWebviewControllerFactory';
 import { VSCCreatePullRequestActionApi } from './webview/pullrequest/vscCreatePullRequestActionImpl';
@@ -60,9 +75,8 @@ import { VSCStartWorkWebviewControllerFactory } from './webview/startwork/vscSta
 import { CreateIssueProblemsWebview } from './webviews/createIssueProblemsWebview';
 import { CreateIssueWebview } from './webviews/createIssueWebview';
 import { JiraIssueViewManager } from './webviews/jiraIssueViewManager';
-import { StartWorkOnIssueWebview } from './webviews/startWorkOnIssueWebview';
+import { CreateWorkItemWebviewProvider } from './work-items/create-work-item/createWorkItemWebviewProvider';
 
-const isDebuggingRegex = /^--(debug|inspect)\b(-brk\b|(?!-))=?/;
 const ConfigTargetKey = 'configurationTarget';
 
 export class Container {
@@ -70,8 +84,16 @@ export class Container {
     private static _commonMessageHandler: CommonActionMessageHandler;
     private static _bitbucketHelper: CheckoutHelper;
     private static _assignedWorkItemsView: AssignedWorkItemsViewProvider;
+    private static _helpExplorer: HelpExplorer;
 
-    static async initialize(context: ExtensionContext, config: IConfig, version: string) {
+    // Container for all rovodev components that might get toggled by feature flags
+    private static _rovodevDisposable?: vscode.Disposable = undefined;
+
+    static async initialize(context: ExtensionContext, version: string) {
+        canFetchInternalUrl().then((success) => {
+            this._isInAtlassianNetwork = success;
+        });
+
         const analyticsEnv: string = this.isDebugging ? 'staging' : 'prod';
 
         this._analyticsClient = analyticsClient({
@@ -81,8 +103,19 @@ export class Container {
             subproduct: 'atlascode',
             version: version,
             deviceId: this.machineId,
-            enable: this.getAnalyticsEnable(),
+            enable: this.getAnalyticsEnabled(),
         });
+
+        context.subscriptions.push(
+            env.onDidChangeTelemetryEnabled(() => {
+                this._analyticsClient.setAnalyticsEnabled(this.getAnalyticsEnabled());
+            }),
+        );
+
+        if (this.isDebugging) {
+            setCommandContext(CommandContext.DebugMode, true);
+            registerDebugCommands(context);
+        }
 
         this._cancellationManager = new Map();
         this._analyticsApi = new VSCAnalyticsApi(this._analyticsClient, this.isRemote, this.isWebUI);
@@ -91,7 +124,7 @@ export class Container {
         this._context = context;
         this._version = version;
 
-        context.subscriptions.push((this._credentialManager = new CredentialManager(this._analyticsClient)));
+        context.subscriptions.push((this._credentialManager = new CredentialManager(context, this._analyticsClient)));
         context.subscriptions.push((this._siteManager = new SiteManager(context.globalState)));
         context.subscriptions.push((this._clientManager = new ClientManager(context)));
         context.subscriptions.push((this._jiraProjectManager = new JiraProjectManager()));
@@ -101,7 +134,6 @@ export class Container {
             (this._createIssueProblemsWebview = new CreateIssueProblemsWebview(context.extensionPath)),
         );
         context.subscriptions.push((this._jiraIssueViewManager = new JiraIssueViewManager(context.extensionPath)));
-        context.subscriptions.push(new StartWorkOnIssueWebview(context.extensionPath));
         context.subscriptions.push(new IssueHoverProviderManager());
         context.subscriptions.push(new AuthStatusBar());
         context.subscriptions.push((this._jqlManager = new JQLManager()));
@@ -118,18 +150,18 @@ export class Container {
             this._analyticsApi,
         );
 
-        const onboardingV2ViewFactory = new SingleWebview<any, OnboardingAction>(
+        const settingsV3ViewFactory = new SingleWebview<SectionV3ChangeMessage, ConfigAction>(
             context.extensionPath,
-            new VSCOnboardingWebviewControllerFactory(
-                new VSCOnboardingActionApi(this._analyticsApi),
+            new VSCConfigV3WebviewControllerFactory(
+                new VSCConfigActionApi(this._analyticsApi, this._cancellationManager),
                 this._commonMessageHandler,
                 this._analyticsApi,
-                ONBOARDING_URL,
+                SETTINGS_URL,
             ),
-            this.analyticsApi,
+            this._analyticsApi,
         );
 
-        const startWorkV2ViewFactory = new SingleWebview<StartWorkIssueMessage, StartWorkAction>(
+        const startWorkViewFactory = new SingleWebview<StartWorkIssueMessage, StartWorkAction>(
             context.extensionPath,
             new VSCStartWorkWebviewControllerFactory(
                 new VSCStartWorkActionApi(),
@@ -149,9 +181,7 @@ export class Container {
             this._analyticsApi,
         );
 
-        context.subscriptions.push((this._settingsWebviewFactory = settingsV2ViewFactory));
-        context.subscriptions.push((this._onboardingWebviewFactory = onboardingV2ViewFactory));
-        context.subscriptions.push((this._startWorkWebviewFactory = startWorkV2ViewFactory));
+        context.subscriptions.push((this._startWorkWebviewFactory = startWorkViewFactory));
         context.subscriptions.push((this._createPullRequestWebviewFactory = createPullRequestV2ViewFactory));
 
         const pipelinesV2Webview = new MultiWebview<Pipeline, PipelineSummaryAction>(
@@ -166,51 +196,280 @@ export class Container {
 
         this._loginManager = new LoginManager(this._credentialManager, this._siteManager, this._analyticsClient);
         this._bitbucketHelper = new BitbucketCheckoutHelper(context.globalState);
-        context.subscriptions.push(new HelpExplorer());
+        this._helpExplorer = new HelpExplorer();
+        context.subscriptions.push(this._helpExplorer);
 
-        try {
-            await FeatureFlagClient.initialize({
-                analyticsClient: this._analyticsClient,
-                identifiers: {
-                    analyticsAnonymousId: this.machineId,
-                },
+        this._featureFlagClient = FeatureFlagClient.getInstance();
+
+        await this.initializeFeatureFlagClient();
+
+        if (this._featureFlagClient.checkExperimentValue(Experiments.AtlascodeNewSettingsExperiment)) {
+            context.subscriptions.push((this._settingsWebviewFactory = settingsV3ViewFactory));
+        } else {
+            context.subscriptions.push((this._settingsWebviewFactory = settingsV2ViewFactory));
+        }
+
+        if (this._featureFlagClient.checkGate(Features.UseNewAuthFlow)) {
+            setCommandContext(CommandContext.UseNewAuthFlow, true);
+            context.subscriptions.push(registerQuickAuthCommand());
+        } else {
+            setCommandContext(CommandContext.UseNewAuthFlow, false);
+        }
+
+        context.subscriptions.push(
+            (this._rovoDevEntitlementChecker = new RovoDevEntitlementChecker(this._analyticsClient)),
+        );
+
+        // in Boysenberry we don't need to listen to Jira auth updates
+        if (!RovodevStaticConfig.isBBY) {
+            // Check Rovo Dev entitlement on startup
+            await this._rovoDevEntitlementChecker.triggerEntitlementNotification();
+            // refresh Rovo Dev when auth sites change
+            this._siteManager.onDidSitesAvailableChange(async () => {
+                await this.updateFeatureFlagTenantId();
+                await this.refreshRovoDev(context);
+                await this._rovoDevEntitlementChecker.triggerEntitlementNotification();
             });
 
+            // refresh Rovo Dev when Jira gets enabled or disabled
+            context.subscriptions.push(
+                configuration.onDidChange(async (e) => {
+                    if (configuration.changed(e, 'jira.enabled') || configuration.changed(e, 'rovodev.enabled')) {
+                        await this.refreshRovoDev(context);
+                        await this._rovoDevEntitlementChecker.triggerEntitlementNotification();
+                    }
+                }, this),
+            );
+        }
+
+        await this.updateFeatureFlagTenantId();
+
+        context.subscriptions.push(AtlascodeUriHandler.create(this._analyticsApi, this._bitbucketHelper));
+
+        SearchJiraHelper.initialize();
+        SearchAllJiraHelper.initialize();
+        context.subscriptions.push(new CustomJQLViewProvider());
+        context.subscriptions.push((this._assignedWorkItemsView = new AssignedWorkItemsViewProvider()));
+
+        if (this.featureFlagClient.checkGate(Features.CreateWorkItemWebviewV2)) {
+            context.subscriptions.push(
+                (this._createWorkItemWebviewProvider = new CreateWorkItemWebviewProvider(
+                    context,
+                    context.extensionPath,
+                )),
+            );
+        }
+        this._onboardingProvider = new OnboardingProvider();
+
+        this.refreshRovoDev(context);
+
+        // Initialize Sentry for error tracking
+
+        const sentryConfig: SentryConfig = {
+            enabled: process.env.SENTRY_ENABLED === 'true',
+            featureFlagEnabled: this.featureFlagClient.checkGate(Features.SentryLogging),
+            dsn: process.env.SENTRY_DSN,
+            environment: process.env.SENTRY_ENVIRONMENT || 'development',
+            sampleRate: parseFloat(process.env.SENTRY_SAMPLE_RATE || '1.0'),
+            atlasCodeVersion: version,
+        };
+
+        await SentryService.getInstance().initialize(sentryConfig, (error: string) => {
+            this.analyticsApi.fireSentryCapturedExceptionFailedEvent({ error });
+        });
+        Logger.info('Sentry initialized successfully');
+    }
+
+    private static async initializeFeatureFlagClient() {
+        try {
+            await this._featureFlagClient.initialize({
+                analyticsAnonymousId: this.machineId,
+            });
+
+            this.pushFeatureUpdatesToUI();
             Logger.debug(`FeatureFlagClient: Succesfully initialized the client.`);
             featureFlagClientInitializedEvent(true).then((e) => {
                 this.analyticsClient.sendTrackEvent(e);
             });
         } catch (err) {
             const error = err as FeatureFlagClientInitError;
-            Logger.debug(`FeatureFlagClient: Failed to initialize the client: ${error.reason}`);
-            featureFlagClientInitializedEvent(false, error.errorType, error.reason).then((e) => {
+            Logger.debug(`FeatureFlagClient: Failed to initialize the client: ${error.message}`);
+            featureFlagClientInitializedEvent(false, error.errorType, error.message).then((e) => {
                 this.analyticsClient.sendTrackEvent(e);
             });
         }
+    }
+    static async updateFeatureFlagTenantId(): Promise<boolean> {
+        const tenantId = Container.config.jira.enabled ? this._siteManager.primarySite?.id : undefined;
 
-        FeatureFlagClient.checkExperimentStringValueWithInstrumentation(Experiments.AtlascodeAA);
-        FeatureFlagClient.checkGateValueWithInstrumentation(Features.NoOpFeature);
+        try {
+            await this._featureFlagClient.updateUser({ tenantId });
+            this.pushFeatureUpdatesToUI();
+            return true;
+        } catch (err) {
+            Logger.error(err, "FeatureFlagClient: Failed to update user's tenantId");
+            return false;
+        }
+    }
 
-        context.subscriptions.push(AtlascodeUriHandler.create(this._analyticsApi, this._bitbucketHelper));
+    public static async isAtlassianUser(...products: Product[]) {
+        for (const product of products) {
+            try {
+                const authInfo = await this._credentialManager.getAllValidAuthInfo(product);
+                if (authInfo.findIndex((x) => x.user.email.endsWith('@atlassian.com')) >= 0) {
+                    return true;
+                }
+            } catch {}
+        }
 
-        SearchJiraHelper.initialize();
-        context.subscriptions.push(new CustomJQLViewProvider());
-        context.subscriptions.push((this._assignedWorkItemsView = new AssignedWorkItemsViewProvider()));
+        return false;
+    }
 
-        this._onboardingProvider = new OnboardingProvider();
+    private static async refreshRovoDev(context: ExtensionContext) {
+        const shouldEnableRovoDev = (this.config.rovodev.enabled && this.config.jira.enabled) || this.isBoysenberryMode;
+
+        if (shouldEnableRovoDev) {
+            await this.enableRovoDev(context);
+        } else {
+            await this.disableRovoDev();
+        }
+    }
+
+    private static async enableRovoDev(context: ExtensionContext) {
+        this._isRovoDevEnabled = true;
+
+        if (this._rovodevDisposable) {
+            if (this.isBoysenberryMode) {
+                return;
+            }
+
+            try {
+                // The process should be already running, so we signal that the credentials may have changed
+                await RovoDevProcessManager.refreshRovoDevCredentials(context);
+            } catch (error) {
+                RovoDevLogger.error(error, 'Refreshing Rovo Dev credentials');
+                return;
+            }
+        } else {
+            try {
+                // don't add anything async before initializing _rovodevDisposable
+                const lspEnabled = this._featureFlagClient.checkGate(Features.RovoDevLspEnabled);
+
+                this._rovodevDisposable = vscode.Disposable.from(
+                    languages.registerCodeActionsProvider({ scheme: 'file' }, new RovoDevCodeActionProvider(), {
+                        providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
+                    }),
+                    (this._rovodevWebviewProvider = new RovoDevWebviewProvider(context, context.extensionPath)),
+                    ...(lspEnabled
+                        ? [(this._rovodevLanguageServerProvider = new RovoDevLanguageServerProvider(context))]
+                        : []),
+                );
+
+                context.subscriptions.push(this._rovodevDisposable);
+
+                // this enables the Rovo Dev activity bar
+                await setCommandContext(RovodevCommandContext.RovoDevEnabled, true);
+
+                // only in Boysenberry, we auto-focus the Rovo Dev view
+                if (this.isBoysenberryMode) {
+                    await vscode.commands.executeCommand('atlascode.views.rovoDev.webView.focus');
+                } else {
+                    // Update help explorer to show Rovo Dev content
+                    this._helpExplorer.refresh();
+
+                    // Start the Rovo Dev process
+                    await RovoDevProcessManager.initializeRovoDev(context);
+                }
+            } catch (error) {
+                RovoDevLogger.error(error, 'Enabling Rovo Dev');
+            }
+        }
+
+        try {
+            // Refresh all issue views to show the secret button
+            this.jiraIssueViewManager.refreshAll();
+        } catch (error) {
+            RovoDevLogger.error(error, 'Refreshing Jira issue views');
+            return;
+        }
+    }
+
+    private static async disableRovoDev() {
+        if (this.isBoysenberryMode) {
+            RovoDevLogger.error(new Error('disableRovoDev called in Boysenberry mode'));
+            return;
+        }
+
+        this._isRovoDevEnabled = false;
+
+        if (!this._rovodevDisposable) {
+            // Already disabled
+            return;
+        }
+
+        // Update help explorer to hide Rovo Dev content
+        this._helpExplorer.refresh();
+
+        try {
+            // don't add anything async before disposing _rovodevDisposable
+            this._rovodevDisposable.dispose();
+            this._rovodevDisposable = undefined;
+
+            await setCommandContext(RovodevCommandContext.RovoDevEnabled, false);
+            await RovoDevProcessManager.deactivateRovoDevProcessManager();
+        } catch (error) {
+            RovoDevLogger.error(error, 'Disabling Rovo Dev');
+        }
+
+        try {
+            // Refresh all issue views to show the secret button
+            this.jiraIssueViewManager.refreshAll();
+        } catch (error) {
+            RovoDevLogger.error(error, 'Refreshing Jira issue views');
+            return;
+        }
+    }
+
+    private static pushFeatureUpdatesToUI() {
+        const factories = [
+            this.settingsWebviewFactory,
+            this.startWorkWebviewFactory,
+            this.createPullRequestWebviewFactory,
+        ];
+
+        for (const factory of factories) {
+            if (typeof factory?.updateFeatureMetadata === 'function') {
+                factory.updateFeatureMetadata();
+            }
+        }
     }
 
     static focus() {
         this._assignedWorkItemsView.focus();
     }
 
+    static get assignedWorkItemsView() {
+        return this._assignedWorkItemsView;
+    }
+
+    static setIsEditorFocused(isFocused: boolean) {
+        setCommandContext(CommandContext.IsEditorFocused, isFocused);
+    }
+
     static openPullRequestHandler = (pullRequestUrl: string) => {
         return openPullRequest(this._bitbucketHelper, pullRequestUrl);
     };
 
-    private static getAnalyticsEnable(): boolean {
-        const telemetryConfig = workspace.getConfiguration('telemetry');
-        return telemetryConfig.get<boolean>('enableTelemetry', true);
+    private static getAnalyticsEnabled(): boolean {
+        if (process.env.DISABLE_ANALYTICS === '1') {
+            Logger.debug('[Analytics] Analytics disabled via DISABLE_ANALYTICS env var');
+            return false;
+        }
+
+        const telemetryEnabled = env.isTelemetryEnabled || this.isBoysenberryMode;
+        Logger.debug(`[Analytics] VS Code telemetry enabled: ${telemetryEnabled}`);
+
+        return telemetryEnabled;
     }
 
     static initializeBitbucket(bbCtx: BitbucketContext) {
@@ -237,29 +496,24 @@ export class Container {
         }, 2000);
     }
 
-    static get machineId() {
+    public static get machineId() {
         return env.machineId;
     }
 
-    private static get isRemote() {
-        return env.remoteName !== undefined;
+    public static get isRemote() {
+        return !!env.remoteName;
     }
 
     private static get isWebUI() {
         return env.uiKind === UIKind.Web;
     }
 
-    private static _isDebugging: boolean | undefined;
     public static get isDebugging() {
-        if (this._isDebugging === undefined) {
-            try {
-                const args = process.execArgv;
+        return isDebugging();
+    }
 
-                this._isDebugging = args ? args.some((arg) => isDebuggingRegex.test(arg)) : false;
-            } catch {}
-        }
-
-        return this._isDebugging;
+    public static get isBoysenberryMode() {
+        return !!RovodevStaticConfig.isBBY;
     }
 
     public static get configTarget(): ConfigTarget {
@@ -268,6 +522,37 @@ export class Container {
 
     public static set configTarget(target: ConfigTarget) {
         this._context.globalState.update(ConfigTargetKey, target);
+    }
+
+    private static _appInstanceId: string;
+    /**
+     * An instance ID randomly generated to identify this specific instance.
+     * Note: closing/opening a workspace causes this ID to change.
+     */
+    public static get appInstanceId() {
+        if (!this._appInstanceId) {
+            this._appInstanceId = v4();
+        }
+        return this._appInstanceId;
+    }
+
+    private static _featureFlagClient: FeatureFlagClient;
+    public static get featureFlagClient() {
+        return this._featureFlagClient;
+    }
+
+    private static _isInAtlassianNetwork: boolean | undefined;
+    public static get isInAtlassianNetwork() {
+        return this._isInAtlassianNetwork;
+    }
+
+    private static _isRovoDevEnabled: boolean;
+    public static get isRovoDevEnabled() {
+        return this._isRovoDevEnabled;
+    }
+
+    public static get isRovoDevActive(): boolean {
+        return this._isRovoDevEnabled && this._rovodevWebviewProvider && !this._rovodevWebviewProvider.isDisabled;
     }
 
     private static _version: string;
@@ -300,14 +585,9 @@ export class Container {
         return this._explorerFocusManager;
     }
 
-    private static _settingsWebviewFactory: SingleWebview<SectionChangeMessage, ConfigAction>;
+    private static _settingsWebviewFactory: SingleWebview<SectionChangeMessage | SectionV3ChangeMessage, ConfigAction>;
     public static get settingsWebviewFactory() {
         return this._settingsWebviewFactory;
-    }
-
-    private static _onboardingWebviewFactory: SingleWebview<any, OnboardingAction>;
-    public static get onboardingWebviewFactory() {
-        return this._onboardingWebviewFactory;
     }
 
     private static _pullRequestDetailsWebviewFactory: MultiWebview<any, PullRequestDetailsAction>;
@@ -398,5 +678,39 @@ export class Container {
     private static _onboardingProvider: OnboardingProvider;
     public static get onboardingProvider() {
         return this._onboardingProvider;
+    }
+
+    private static _rovodevWebviewProvider: RovoDevWebviewProvider;
+    public static get rovodevWebviewProvider() {
+        return this._rovodevWebviewProvider;
+    }
+
+    private static _rovodevLanguageServerProvider: RovoDevLanguageServerProvider;
+    public static get rovodevLanguageServerProvider() {
+        return this._rovodevLanguageServerProvider;
+    }
+
+    private static _rovoDevEntitlementChecker: RovoDevEntitlementChecker;
+    public static get rovoDevEntitlementChecker() {
+        return this._rovoDevEntitlementChecker;
+    }
+
+    private static _createWorkItemWebviewProvider: CreateWorkItemWebviewProvider;
+    public static get createWorkItemWebviewProvider() {
+        return this._createWorkItemWebviewProvider;
+    }
+}
+
+async function canFetchInternalUrl(): Promise<boolean> {
+    try {
+        const result = await fetch('http://github.internal.atlassian.com/', {
+            method: 'GET',
+            signal: AbortSignal.timeout(5000),
+        });
+
+        const statusKind = Math.floor((result.status || 0) / 100);
+        return statusKind === 2 || statusKind === 3;
+    } catch {
+        return false;
     }
 }

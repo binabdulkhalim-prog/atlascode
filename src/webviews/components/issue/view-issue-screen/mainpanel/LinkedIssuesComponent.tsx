@@ -1,10 +1,15 @@
-import Button from '@atlaskit/button';
-import AddIcon from '@atlaskit/icon/glyph/add';
-import Select from '@atlaskit/select';
-import { AsyncSelect } from '@atlaskit/select';
-import { IssuePickerIssue, MinimalIssueLink, MinimalIssueOrKeyAndSite } from '@atlassianlabs/jira-pi-common-models';
+import { IconButton } from '@atlaskit/button/new';
+import AddIcon from '@atlaskit/icon/core/add';
+import { GlyphProps } from '@atlaskit/icon/types';
+import Select, { AsyncSelect } from '@atlaskit/select';
+import {
+    IssuePickerIssue,
+    MinimalIssueLink,
+    MinimalIssueOrKeyAndSite,
+    User,
+} from '@atlassianlabs/jira-pi-common-models';
 import { IssueLinkTypeSelectOption, ValueType } from '@atlassianlabs/jira-pi-meta-models';
-import { Box } from '@material-ui/core';
+import { Box } from '@mui/material';
 import { VSCodeButton } from '@vscode/webview-ui-toolkit/react';
 import React from 'react';
 import { DetailedSiteInfo } from 'src/atlclients/authInfo';
@@ -26,7 +31,12 @@ type Props = {
     onIssueClick: (issueOrKey: MinimalIssueOrKeyAndSite<DetailedSiteInfo>) => void;
     onDelete: (issueLink: any) => void;
     enableLinkedIssues: { enable: boolean; setEnableLinkedIssues: (enable: boolean) => void };
+    onStatusChange?: (issueKey: string, statusName: string) => void;
+    onAssigneeChange?: (issueKey: string, assignee: User | null) => void;
+    fetchUsers?: (input: string) => Promise<User[]>;
 };
+
+const SmallAddIcon = (iconProps: GlyphProps) => <AddIcon {...iconProps} size="small" />;
 
 export const LinkedIssuesComponent: React.FC<Props> = ({
     linkTypes,
@@ -38,6 +48,9 @@ export const LinkedIssuesComponent: React.FC<Props> = ({
     onIssueClick,
     onDelete,
     enableLinkedIssues,
+    onStatusChange,
+    onAssigneeChange,
+    fetchUsers,
 }) => {
     const [isEditing, setIsEditing] = React.useState(false);
     const [selectedIssue, setSelectedIssue] = React.useState<IssuePickerIssue | undefined>(undefined);
@@ -79,12 +92,14 @@ export const LinkedIssuesComponent: React.FC<Props> = ({
                     <label className="ac-field-label">{label}</label>
                     {loading ? <p>Saving...</p> : null}
                 </div>
-                <Button
+                <IconButton
                     appearance="subtle"
-                    className="ac-button-secondary-new"
-                    iconBefore={<AddIcon size="small" label="Add" />}
+                    icon={SmallAddIcon}
+                    label="Add linked issue"
+                    spacing="compact"
                     onClick={() => setIsEditing(true)}
-                ></Button>
+                    isTooltipDisabled={false}
+                />
             </Box>
             {isEditing && (
                 <Box style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -134,7 +149,14 @@ export const LinkedIssuesComponent: React.FC<Props> = ({
                     </Box>
                 </Box>
             )}
-            <LinkedIssues onIssueClick={onIssueClick} issuelinks={issuelinks} onDelete={onDelete} />
+            <LinkedIssues
+                onIssueClick={onIssueClick}
+                issuelinks={issuelinks}
+                onDelete={onDelete}
+                onStatusChange={onStatusChange}
+                onAssigneeChange={onAssigneeChange}
+                fetchUsers={fetchUsers}
+            />
         </Box>
     );
 };

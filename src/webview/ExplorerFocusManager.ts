@@ -39,7 +39,7 @@ export class ExplorerFocusManager extends Disposable {
         return this._onFocusEvent.event;
     }
 
-    dispose() {
+    override dispose() {
         this._onFocusEvent.dispose();
         this._disposable.dispose();
     }
@@ -47,7 +47,11 @@ export class ExplorerFocusManager extends Disposable {
     private onDidSitesChange(updateEvent: SitesAvailableUpdateEvent) {
         if (updateEvent.newSites) {
             if (updateEvent.product.key === ProductJira.key) {
-                vscode.commands.executeCommand(`${AssignedJiraItemsViewId}.focus`);
+                // Check if Rovo Dev view is currently visible to avoid switching away from it during authentication
+                const isRovoDevVisible = Container.rovodevWebviewProvider?.isVisible ?? false;
+                if (!isRovoDevVisible) {
+                    vscode.commands.executeCommand(`${AssignedJiraItemsViewId}.focus`);
+                }
             } else if (updateEvent.product.key === ProductBitbucket.key) {
                 vscode.commands.executeCommand(`${PullRequestTreeViewId}.focus`);
             }

@@ -1,8 +1,9 @@
-import { Avatar, Box, Button, CircularProgress, Grid, makeStyles, Tooltip, Typography } from '@material-ui/core';
+import { Avatar, Box, Button, CircularProgress, Grid, Tooltip, Typography } from '@mui/material';
+import { makeStyles } from '@mui/styles';
 import { format, parseISO } from 'date-fns';
 import React, { useCallback, useContext, useEffect, useState } from 'react';
 
-import { Comment, User } from '../../../bitbucket/model';
+import { Comment, PullRequestState, User } from '../../../bitbucket/model';
 import CommentForm from '../common/CommentForm';
 import { formatTime } from '../util/date-fns';
 import { TaskAdder } from './CommentTaskAdder';
@@ -53,6 +54,8 @@ type NestedCommentProps = {
     currentUser: User;
     fetchUsers: (input: string) => Promise<User[]>;
     onDelete: (comment: Comment) => Promise<void>;
+    pullRequestState: PullRequestState;
+    handleEditorFocus: (isFocused: boolean) => void;
 };
 
 export const NestedComment: React.FunctionComponent<NestedCommentProps> = ({
@@ -60,6 +63,8 @@ export const NestedComment: React.FunctionComponent<NestedCommentProps> = ({
     currentUser,
     fetchUsers,
     onDelete,
+    pullRequestState,
+    handleEditorFocus,
 }) => {
     const classes = useStyles();
     const [isReplying, setIsReplying] = useState(false);
@@ -67,6 +72,8 @@ export const NestedComment: React.FunctionComponent<NestedCommentProps> = ({
     const [isCreatingTask, setIsCreatingTask] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const controller = useContext(PullRequestDetailsControllerContext);
+
+    const shouldShowCreateTask = pullRequestState === 'OPEN';
 
     const handleReplyPressed = useCallback(() => {
         setIsReplying(true);
@@ -152,6 +159,7 @@ export const NestedComment: React.FunctionComponent<NestedCommentProps> = ({
                                 <CircularProgress />
                             </Box>
                             <Box hidden={isLoading}>
+                                {/* eslint-disable-next-line react-dom/no-dangerously-set-innerhtml -- TODO check if needed */}
                                 <Typography dangerouslySetInnerHTML={{ __html: comment.htmlContent }} />
                             </Box>
                             <Grid item>
@@ -174,15 +182,19 @@ export const NestedComment: React.FunctionComponent<NestedCommentProps> = ({
                                         <Button className={classes.actionButton} disableRipple onClick={handleDelete}>
                                             Delete
                                         </Button>
-                                        <span className={classes.buttonSeparator}>·</span>
+                                        <span className={classes.buttonSeparator} hidden={!shouldShowCreateTask}>
+                                            ·
+                                        </span>
                                     </Box>
-                                    <Button
-                                        className={classes.actionButton}
-                                        disableRipple
-                                        onClick={handleCreateTaskPressed}
-                                    >
-                                        Create task
-                                    </Button>
+                                    <Box hidden={!shouldShowCreateTask}>
+                                        <Button
+                                            className={classes.actionButton}
+                                            disableRipple
+                                            onClick={handleCreateTaskPressed}
+                                        >
+                                            Create task
+                                        </Button>
+                                    </Box>
                                 </Grid>
                             </Grid>
                             <Grid item className={classes.commentTaskList}>
@@ -204,6 +216,7 @@ export const NestedComment: React.FunctionComponent<NestedCommentProps> = ({
                                         onSave={handleSave}
                                         onCancel={handleCancel}
                                         fetchUsers={fetchUsers}
+                                        handleEditorFocus={handleEditorFocus}
                                     />
                                 </Box>
                             </Grid>
@@ -214,6 +227,8 @@ export const NestedComment: React.FunctionComponent<NestedCommentProps> = ({
                                         currentUser={currentUser}
                                         onDelete={onDelete}
                                         fetchUsers={fetchUsers}
+                                        pullRequestState={pullRequestState}
+                                        handleEditorFocus={handleEditorFocus}
                                     />
                                 </Box>
                             </Grid>
@@ -229,6 +244,7 @@ export const NestedComment: React.FunctionComponent<NestedCommentProps> = ({
                     onSave={handleEdit}
                     onCancel={handleCancelEdit}
                     fetchUsers={fetchUsers}
+                    handleEditorFocus={handleEditorFocus}
                 />
             </Box>
         </React.Fragment>

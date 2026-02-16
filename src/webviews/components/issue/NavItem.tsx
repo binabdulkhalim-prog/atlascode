@@ -1,5 +1,5 @@
 import Button from '@atlaskit/button';
-import CopyIcon from '@atlaskit/icon/glyph/copy';
+import CopyIcon from '@atlaskit/icon/core/copy';
 import Tooltip from '@atlaskit/tooltip';
 import * as React from 'react';
 
@@ -13,7 +13,7 @@ export default class NavItem extends React.Component<
     },
     {}
 > {
-    render() {
+    override render() {
         return (
             <div className="ac-icon-with-text">
                 {this.props.iconUrl && <img style={{ paddingRight: '5px' }} src={this.props.iconUrl} />}

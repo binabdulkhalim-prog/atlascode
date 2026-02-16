@@ -1,5 +1,5 @@
-import { ReducerAction } from '@atlassianlabs/guipi-core-controller';
 import { createEmptyMinimalIssue, MinimalIssue } from '@atlassianlabs/jira-pi-common-models';
+import { ReducerAction } from 'src/ipc/messaging';
 
 import { DetailedSiteInfo, emptySiteInfo } from '../../../atlclients/authInfo';
 import { BitbucketBranchingModel, WorkspaceRepo } from '../../../bitbucket/model';
@@ -8,9 +8,14 @@ import { Branch } from '../../../typings/git';
 export enum StartWorkMessageType {
     Init = 'init',
     StartWorkResponse = 'startWorkResponse',
+    RovoDevPreferenceResponse = 'rovoDevPreferenceResponse',
+    PushBranchPreferenceResponse = 'pushBranchPreferenceResponse',
 }
 
-export type StartWorkMessage = ReducerAction<StartWorkMessageType.Init, StartWorkInitMessage>;
+export type StartWorkMessage =
+    | ReducerAction<StartWorkMessageType.Init, StartWorkInitMessage>
+    | ReducerAction<StartWorkMessageType.RovoDevPreferenceResponse, { enabled: boolean }>
+    | ReducerAction<StartWorkMessageType.PushBranchPreferenceResponse, { enabled: boolean }>;
 export type StartWorkResponse = ReducerAction<StartWorkMessageType.StartWorkResponse, StartWorkResponseMessage>;
 
 export interface StartWorkIssueMessage {
@@ -22,6 +27,7 @@ export interface StartWorkInitMessage {
     repoData: RepoData[];
     customTemplate: string;
     customPrefixes: string[];
+    isRovoDevEnabled: boolean;
 }
 
 export interface StartWorkResponseMessage {
@@ -39,6 +45,8 @@ export interface RepoData {
     workspaceRepo: WorkspaceRepo;
     href?: string;
     avatarUrl?: string;
+    userName: string;
+    userEmail: string;
     localBranches: Branch[];
     remoteBranches: Branch[];
     branchTypes: BranchType[];
@@ -46,6 +54,7 @@ export interface RepoData {
     hasLocalChanges?: boolean;
     branchingModel?: BitbucketBranchingModel;
     isCloud: boolean;
+    currentBranch?: string;
 }
 
 export const emptyStartWorkIssueMessage = {
@@ -55,6 +64,7 @@ export const emptyStartWorkIssueMessage = {
 export const emptyStartWorkInitMessage = {
     issue: createEmptyMinimalIssue(emptySiteInfo),
     repoData: [],
+    isRovoDevEnabled: false,
 };
 
 export const emptyRepoData: RepoData = {
@@ -73,6 +83,8 @@ export const emptyRepoData: RepoData = {
     },
     href: undefined,
     avatarUrl: undefined,
+    userName: '',
+    userEmail: '',
     localBranches: [],
     remoteBranches: [],
     branchTypes: [],
@@ -80,4 +92,5 @@ export const emptyRepoData: RepoData = {
     hasLocalChanges: undefined,
     branchingModel: undefined,
     isCloud: false,
+    currentBranch: undefined,
 };

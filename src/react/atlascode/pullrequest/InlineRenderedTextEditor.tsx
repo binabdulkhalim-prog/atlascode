@@ -1,5 +1,6 @@
-import { Box, darken, Grid, lighten, makeStyles, Theme, Tooltip, Typography } from '@material-ui/core';
-import EditIcon from '@material-ui/icons/Edit';
+import EditIcon from '@mui/icons-material/Edit';
+import { Box, darken, Grid, lighten, Theme, Tooltip, Typography } from '@mui/material';
+import { makeStyles } from '@mui/styles';
 import React, { useCallback, useState } from 'react';
 
 import { User } from '../../../bitbucket/model';
@@ -23,7 +24,7 @@ const useStyles = makeStyles(
                 display: 'flex',
                 'align-items': 'center',
                 'background-color':
-                    theme.palette.type === 'dark'
+                    theme.palette.mode === 'dark'
                         ? lighten(theme.palette.background.default, 0.15)
                         : darken(theme.palette.background.default, 0.15),
             },
@@ -35,6 +36,7 @@ type InlineTextEditorProps = {
     htmlContent: string;
     onSave?: (value: string) => void;
     fetchUsers?: (input: string) => Promise<User[]>;
+    handleEditorFocus: (isFocused: boolean) => void;
 };
 
 const InlineRenderedTextEditor: React.FC<InlineTextEditorProps> = (props: InlineTextEditorProps) => {
@@ -62,6 +64,8 @@ const InlineRenderedTextEditor: React.FC<InlineTextEditorProps> = (props: Inline
             onSave={handleSave}
             onCancel={exitEditMode}
             fetchUsers={props.fetchUsers}
+            onFocus={() => props.handleEditorFocus(true)}
+            onBlur={() => props.handleEditorFocus(false)}
         />
     ) : (
         <Grid
@@ -73,6 +77,7 @@ const InlineRenderedTextEditor: React.FC<InlineTextEditorProps> = (props: Inline
             onMouseLeave={handleFocusOut}
         >
             <Grid item xs>
+                {/* eslint-disable-next-line react-dom/no-dangerously-set-innerhtml -- TODO check if needed */}
                 <Typography variant="body1" dangerouslySetInnerHTML={{ __html: props.htmlContent }} />
             </Grid>
             <Grid item>

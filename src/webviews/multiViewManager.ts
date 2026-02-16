@@ -51,12 +51,25 @@ export abstract class AbstractMultiViewManager<T> implements Disposable {
         }
     }
 
-    public async refreshAll(): Promise<void> {
-        return new Promise<void>((resolve, reject) => {
-            this._viewMap.forEach((view) => {
-                view.invalidate();
-            });
-        });
+    handleContextMenu({
+        viewKey,
+        action,
+        data,
+    }: {
+        viewKey: string;
+        action: string;
+        data: Record<string, string | boolean>;
+    }): boolean {
+        const view = this._viewMap.get(viewKey);
+        if (view && view.handleContextMenuCommand && typeof view.handleContextMenuCommand === 'function') {
+            view.handleContextMenuCommand({ action, data });
+            return true;
+        }
+        return false;
+    }
+
+    public refreshAll(): void {
+        this._viewMap.forEach((view) => view.invalidate());
     }
 
     dispose() {

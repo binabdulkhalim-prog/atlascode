@@ -1,4 +1,4 @@
-import { ReducerAction } from '@atlassianlabs/guipi-core-controller';
+import { ReducerAction } from 'src/ipc/messaging';
 
 import { AuthInfo, DetailedSiteInfo, SiteInfo } from '../../../atlclients/authInfo';
 import { ConfigTarget } from '../models/config';
@@ -19,6 +19,8 @@ export enum ConfigActionType {
     ViewJiraIssue = 'viewJiraIssue',
     CreatePullRequest = 'createPullRequest',
     ViewPullRequest = 'viewPullRequest',
+    OpenNativeSettings = 'openNativeSettings',
+    StartAuthFlow = 'StartAuthFlow',
 }
 
 export type ConfigAction =
@@ -36,6 +38,8 @@ export type ConfigAction =
     | ReducerAction<ConfigActionType.ViewJiraIssue>
     | ReducerAction<ConfigActionType.CreatePullRequest>
     | ReducerAction<ConfigActionType.ViewPullRequest>
+    | ReducerAction<ConfigActionType.OpenNativeSettings>
+    | ReducerAction<ConfigActionType.StartAuthFlow>
     | CommonAction;
 
 export interface AuthAction {

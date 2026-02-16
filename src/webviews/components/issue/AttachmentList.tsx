@@ -1,9 +1,8 @@
-import Button from '@atlaskit/button';
-import ShortcutIcon from '@atlaskit/icon/glyph/shortcut';
-import TrashIcon from '@atlaskit/icon/glyph/trash';
+import { LinkIconButton } from '@atlaskit/button/new';
+import DeleteIcon from '@atlaskit/icon/core/delete';
+import LinkExternalIcon from '@atlaskit/icon/core/link-external';
 import Modal, { ModalTransition } from '@atlaskit/modal-dialog';
 import TableTree from '@atlaskit/table-tree';
-import Tooltip from '@atlaskit/tooltip';
 import { filesize } from 'filesize';
 import React, { useState } from 'react';
 
@@ -26,21 +25,25 @@ type AttachmentListProps = {
 const Delete = (data: ItemData) => {
     return (
         <div className="ac-delete" onClick={() => data.delfunc(data.attachment)}>
-            <TrashIcon label="trash" />
+            <DeleteIcon label="Delete" />
         </div>
     );
 };
 
 const ExternalLink = (data: ItemData) => {
     return (
-        <Tooltip content="View in browser">
-            <Button
-                className="ac-link-button"
-                appearance="link"
-                iconBefore={<ShortcutIcon size="small" label="open-attachment" />}
-                href={`${data.baseLinkUrl}/rest/api/2/attachment/content/${data.attachment.id}`}
-            />
-        </Tooltip>
+        <LinkIconButton
+            href={`${data.baseLinkUrl}/rest/api/2/attachment/content/${data.attachment.id}`}
+            icon={(iconProps) => (
+                <span style={{ color: 'var(--vscode-textLink-foreground)' }}>
+                    <LinkExternalIcon {...iconProps} size="medium" label="Open attachment" color="currentColor" />
+                </span>
+            )}
+            label="View in browser"
+            appearance="subtle"
+            spacing="compact"
+            isTooltipDisabled={false}
+        />
     );
 };
 
@@ -83,8 +86,8 @@ export const AttachmentList: React.FunctionComponent<AttachmentListProps> = ({
                     };
                 })}
             />
-            <ModalTransition>
-                {selectedAttachment && (
+            {selectedAttachment && (
+                <ModalTransition>
                     <Modal
                         heading={selectedAttachment.filename}
                         shouldCloseOnEscapePress
@@ -93,8 +96,8 @@ export const AttachmentList: React.FunctionComponent<AttachmentListProps> = ({
                     >
                         <RenderedContent html={`<img src=${selectedAttachment.content} />`} fetchImage={fetchImage} />
                     </Modal>
-                )}
-            </ModalTransition>
+                </ModalTransition>
+            )}
         </React.Fragment>
     );
 };
